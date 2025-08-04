@@ -1,1 +1,1 @@
-# CNN_FPGA
+End-to-end implementation of a quantised CNN (MNIST digit recognition) inference pipeline in Verilog, fully simulated with Verilator, with Python used for training, quantisation verification, and simulated UART I/O.
