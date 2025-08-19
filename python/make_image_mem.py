@@ -4,17 +4,14 @@ import numpy as np
 
 # load sample batch
 d = torch.load("./output/sample_batch.pt")
-img = d['images'][0]  # first image, shape [1,28,28]
-# flatten and quantise with 7 fractional bits
-frac_bits = 7
-flat = img.view(-1).numpy()
-fixed = []
-for v in flat:
-    q = int(round(v * (1 << frac_bits)))
-    if q < 0:
-        q = (1 << 16) + q
-    fixed.append(q)
-with open("weights/image.mem", "w") as f:
-    for v in fixed:
-        f.write(f"{v:04X}\n")  # 16-bit hex
-print("Written weights/image.mem")
+img = d['images'][0].squeeze(0).numpy()  # [28,28] in [0,1]
+bytes_ = np.clip(np.rint(img * 255), 0, 255).astype(np.uint8)
+
+# save as .mem file (hex format)
+with open("weights/input_image.mem", "w") as f:
+    for b in bytes_.flatten():
+        f.write(f"{b:02X}\n")
+
+# raw bytes (cleaner for a C++ TB)
+open("weights/input_image.bin", "wb").write(bytes_.tobytes())
+print("Wrote input_image.mem / input_image.bin")

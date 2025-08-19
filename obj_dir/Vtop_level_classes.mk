@@ -2,7 +2,7 @@
 # DESCRIPTION: Verilator output: Make include file with class lists
 #
 # This file lists generated Verilated files, for including in higher level makefiles.
-# See Vconv2d.mk for the caller.
+# See Vtop_level.mk for the caller.
 
 ### Switches...
 # C11 constructs required?  0/1 (always on now)
@@ -25,24 +25,24 @@ VM_TRACE_VCD = 1
 ### Object file lists...
 # Generated module classes, fast-path, compile with highest optimization
 VM_CLASSES_FAST += \
-  Vconv2d \
-  Vconv2d___024root__DepSet_h3a0c9c3f__0 \
-  Vconv2d___024root__DepSet_h2ec8a0d0__0 \
+  Vtop_level \
+  Vtop_level___024root__DepSet_h5fe6104a__0 \
+  Vtop_level___024root__DepSet_hd51d4d91__0 \
 
 # Generated module classes, non-fast-path, compile with low/medium optimization
 VM_CLASSES_SLOW += \
-  Vconv2d___024root__Slow \
-  Vconv2d___024root__DepSet_h2ec8a0d0__0__Slow \
+  Vtop_level___024root__Slow \
+  Vtop_level___024root__DepSet_hd51d4d91__0__Slow \
 
 # Generated support classes, fast-path, compile with highest optimization
 VM_SUPPORT_FAST += \
-  Vconv2d__Trace__0 \
+  Vtop_level__Trace__0 \
 
 # Generated support classes, non-fast-path, compile with low/medium optimization
 VM_SUPPORT_SLOW += \
-  Vconv2d__Syms \
-  Vconv2d__Trace__0__Slow \
-  Vconv2d__TraceDecls__0__Slow \
+  Vtop_level__Syms \
+  Vtop_level__Trace__0__Slow \
+  Vtop_level__TraceDecls__0__Slow \
 
 # Global classes, need linked once per executable, fast-path, compile with highest optimization
 VM_GLOBAL_FAST += \

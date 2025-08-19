@@ -1,4 +1,4 @@
-tb_conv2d.o: ../tb/tb_conv2d.cpp Vconv2d.h \
+tb_full_pipeline.o: ../tb/tb_full_pipeline.cpp Vtop_level.h \
   /opt/homebrew/Cellar/verilator/5.038/share/verilator/include/verilated.h \
   /opt/homebrew/Cellar/verilator/5.038/share/verilator/include/verilated_config.h \
   /opt/homebrew/Cellar/verilator/5.038/share/verilator/include/verilatedos.h \

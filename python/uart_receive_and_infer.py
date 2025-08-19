@@ -4,8 +4,9 @@ import torch.nn.functional as F
 import numpy as np
 import argparse
 import os
+from pathlib import Path
 
-# same model definition
+# Same model definition
 class SmallCNN(nn.Module):
     def __init__(self):
         super().__init__()
@@ -19,21 +20,40 @@ class SmallCNN(nn.Module):
         x = x.view(x.size(0), -1)
         return self.fc1(x)
 
-def fixed_hex_to_float(hex_str, frac_bits=7):
-    """Convert 16-bit two's complement hex string to float given fractional bits."""
-    val = int(hex_str, 16)
-    if val & (1 << 15):  # negative
-        val = val - (1 << 16)
-    return val / (1 << frac_bits)
-
-def load_uart_image(path, frac_bits=7):
+def load_image_mem_hex_bytes(path: str):
+    """
+    Load 28x28 image from a .mem text file with ONE 2-hex-digit byte per line (00..FF).
+    Returns a torch tensor [1,1,28,28] in float32 scaled to [0,1].
+    """
     with open(path) as f:
         lines = [l.strip() for l in f if l.strip()]
     if len(lines) != 28 * 28:
-        raise ValueError(f"Expected 784 pixels, got {len(lines)}")
-    floats = [fixed_hex_to_float(h, frac_bits) for h in lines]
-    img = torch.tensor(floats, dtype=torch.float32).view(1, 1, 28, 28)  # batch=1
-    return img
+        raise ValueError(f"Expected 784 lines, got {len(lines)} in {path}")
+    arr = np.array([int(h, 16) for h in lines], dtype=np.uint8).reshape(1, 1, 28, 28)
+    return torch.tensor(arr, dtype=torch.float32) / 255.0
+
+def load_image_bin_bytes(path: str):
+    """
+    Load 28x28 image from a raw .bin file containing exactly 784 bytes.
+    Returns a torch tensor [1,1,28,28] in float32 scaled to [0,1].
+    """
+    data = np.fromfile(path, dtype=np.uint8)
+    if data.size != 28 * 28:
+        raise ValueError(f"Expected 784 bytes, got {data.size} in {path}")
+    arr = data.reshape(1, 1, 28, 28)
+    return torch.tensor(arr, dtype=torch.float32) / 255.0
+
+def load_image_auto(path: str):
+    """
+    Auto-detect loader:
+      - *.bin  -> raw 784 bytes
+      - otherwise assume .mem with 2-hex-digit lines
+    """
+    ext = Path(path).suffix.lower()
+    if ext == ".bin":
+        return load_image_bin_bytes(path)
+    else:
+        return load_image_mem_hex_bytes(path)
 
 def evaluate(model, image_tensor):
     model.eval()
@@ -45,20 +65,22 @@ def evaluate(model, image_tensor):
     return pred, confidence
 
 def main(args):
-    # load model
+    # Load model
     model = SmallCNN()
     state = torch.load(os.path.join(args.model_dir, "small_cnn.pth"), map_location="cpu")
     model.load_state_dict(state)
 
-    # load image from uart_out.txt
-    img = load_uart_image(args.uart_file, frac_bits=args.frac_bits)
+    # Load image (bytes -> [0,1] float)
+    img = load_image_auto(args.image_file)
+
+    # Run float inference
     pred, conf = evaluate(model, img)
-    print(f"Prediction from float model on received image: {pred} (confidence {conf:.3f})")
+    print(f"Float-model prediction on input image: {pred} (confidence {conf:.3f})")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Consume uart_out.txt and run inference")
-    parser.add_argument("--uart-file", type=str, default="uart_out.txt", help="Path to uart_out.txt")
-    parser.add_argument("--model-dir", type=str, default="./output", help="Directory with saved model")
-    parser.add_argument("--frac-bits", type=int, default=7, help="Fractional bits used in fixed-point")
+    parser = argparse.ArgumentParser(description="Run float inference on the same image sent to hardware")
+    parser.add_argument("--image-file", type=str, default="./weights/input_image.mem",
+                        help="Path to input image (input_image.mem with 2-hex-digit bytes per line, or input_image.bin)")
+    parser.add_argument("--model-dir", type=str, default="./output", help="Directory with small_cnn.pth")
     args = parser.parse_args()
     main(args)

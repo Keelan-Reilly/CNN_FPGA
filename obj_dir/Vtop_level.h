@@ -5,20 +5,20 @@
 // The class here is then constructed to instantiate the design.
 // See the Verilator manual for examples.
 
-#ifndef VERILATED_VCONV2D_H_
-#define VERILATED_VCONV2D_H_  // guard
+#ifndef VERILATED_VTOP_LEVEL_H_
+#define VERILATED_VTOP_LEVEL_H_  // guard
 
 #include "verilated.h"
 
-class Vconv2d__Syms;
-class Vconv2d___024root;
+class Vtop_level__Syms;
+class Vtop_level___024root;
 class VerilatedVcdC;
 
 // This class is the main interface to the Verilated model
-class alignas(VL_CACHE_LINE_BYTES) Vconv2d VL_NOT_FINAL : public VerilatedModel {
+class alignas(VL_CACHE_LINE_BYTES) Vtop_level VL_NOT_FINAL : public VerilatedModel {
   private:
     // Symbol table holding complete model state (owned by this class)
-    Vconv2d__Syms* const vlSymsp;
+    Vtop_level__Syms* const vlSymsp;
 
   public:
 
@@ -31,12 +31,9 @@ class alignas(VL_CACHE_LINE_BYTES) Vconv2d VL_NOT_FINAL : public VerilatedModel 
     // propagate new values into/out from the Verilated model.
     VL_IN8(&clk,0,0);
     VL_IN8(&reset,0,0);
-    VL_IN8(&start,0,0);
-    VL_OUT8(&done,0,0);
-    VL_IN16((&input_feature)[1][28][28],15,0);
-    VL_IN16((&weights)[8][1][3][3],15,0);
-    VL_IN16((&biases)[8],15,0);
-    VL_OUT16((&out_feature)[8][28][28],15,0);
+    VL_IN8(&uart_rx_i,0,0);
+    VL_OUT8(&uart_tx_o,0,0);
+    VL_OUT8(&predicted_digit,3,0);
 
     // CELLS
     // Public to allow access to /* verilator public */ items.
@@ -44,19 +41,19 @@ class alignas(VL_CACHE_LINE_BYTES) Vconv2d VL_NOT_FINAL : public VerilatedModel 
 
     // Root instance pointer to allow access to model internals,
     // including inlined /* verilator public_flat_* */ items.
-    Vconv2d___024root* const rootp;
+    Vtop_level___024root* const rootp;
 
     // CONSTRUCTORS
     /// Construct the model; called by application code
     /// If contextp is null, then the model will use the default global context
     /// If name is "", then makes a wrapper with a
     /// single model invisible with respect to DPI scope names.
-    explicit Vconv2d(VerilatedContext* contextp, const char* name = "TOP");
-    explicit Vconv2d(const char* name = "TOP");
+    explicit Vtop_level(VerilatedContext* contextp, const char* name = "TOP");
+    explicit Vtop_level(const char* name = "TOP");
     /// Destroy the model; called (often implicitly) by application code
-    virtual ~Vconv2d();
+    virtual ~Vtop_level();
   private:
-    VL_UNCOPYABLE(Vconv2d);  ///< Copying not allowed
+    VL_UNCOPYABLE(Vtop_level);  ///< Copying not allowed
 
   public:
     // API METHODS

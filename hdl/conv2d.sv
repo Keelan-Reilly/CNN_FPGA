@@ -111,7 +111,7 @@ module conv2d #(
                         end
                     end
                     // add bias (bias is in same fixed-point Q format; extend to accumulator width)
-                    accum = accum + ({{(signed_accum_width-DATA_WIDTH){biases[oc][DATA_WIDTH-1]}}, biases[oc]}); // sign-extend bias
+                    accum = accum + ({{(signed_accum_width-DATA_WIDTH){biases[oc][DATA_WIDTH-1]}}, biases[oc]}) <<< FRAC_BITS; // sign-extend bias
 
                     // write scaled, saturated result to output
                     out_feature[oc][out_row][out_col] <= scale_and_saturate(accum);
