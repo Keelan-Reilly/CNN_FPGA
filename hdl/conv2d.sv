@@ -1,148 +1,200 @@
-// conv2d.v
-// Parameterised fixed-point 2D convolution (stride=1, padding=1) for MNIST-style input.
-// Supports multiple output channels and single input channel (can be extended).
-// Input and weight formats are signed fixed-point (Q format with FRAC_BITS fractional bits).
+//======================================================================
+// conv2d.sv — 2-D convolution layer (fixed-point, same output size)
+//----------------------------------------------------------------------
+// What this module does:
+//   • Takes a multi-channel square image and a set of convolution kernels.
+//   • Computes OUT_CHANNELS output feature maps, each the same size as the input.
+//   • Uses fixed-point maths. Results are clipped to the output bit-width.
+//   • You start it with `start`; it runs through the whole image once and
+//     pulses `done` at the end.
+//
+// How it runs internally:
+//   • A small state machine walks one output pixel at a time.
+//   • For that pixel, it multiplies the relevant input pixels by the kernel
+//     weights and adds them up, starting from the bias.
+//   • It then scales the sum back to the output format, clips it if needed,
+//     writes the pixel, and moves to the next location.
+//   • Zero-padding is used at the image edges so the output size matches the input.
+//======================================================================
 
 module conv2d #(
-    parameter DATA_WIDTH     = 16,   // bit-width of input / weight (signed)
-    parameter FRAC_BITS      = 7,    // number of fractional bits in fixed-point
-    parameter IN_CHANNELS    = 1,    // input depth
-    parameter OUT_CHANNELS   = 8,    // number of filters
-    parameter KERNEL         = 3,    // kernel size (assumed square, odd)
-    parameter IMG_SIZE       = 28    // input spatial dimension (assumes square)
+    // Fixed-point word format and geometry
+    parameter int DATA_WIDTH   = 16,  // total bits for inputs/weights/biases/output (signed)
+    parameter int FRAC_BITS    = 7,   // fractional bits in fixed-point Q format
+    parameter int IN_CHANNELS  = 1,   // number of input feature maps
+    parameter int OUT_CHANNELS = 8,   // number of output feature maps (kernels)
+    parameter int KERNEL       = 3,   // kernel size (assumed odd; e.g. 3, 5, 7)
+    parameter int IMG_SIZE     = 28   // square image size (HxW)
 )(
-    input  logic                     clk,
-    input  logic                     reset,    // synchronous reset
-    input  logic                     start,    // pulse to begin convolution
-    // interface to input feature map (assumed preloaded into internal buffer or external BRAM)
-    input  logic signed [DATA_WIDTH-1:0] input_feature [0:IN_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1],
-    // weight memory: [out_chan][in_chan][k][k] loaded externally via $readmemh into an array wrapper
-    input  logic signed [DATA_WIDTH-1:0] weights [0:OUT_CHANNELS-1][0:IN_CHANNELS-1][0:KERNEL-1][0:KERNEL-1],
-    input  logic signed [DATA_WIDTH-1:0] biases  [0:OUT_CHANNELS-1],
-    output logic signed [DATA_WIDTH-1:0] out_feature [0:OUT_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1],
-    output logic                     done      // asserted when full output map is ready
+    // Clock / control
+    input  logic clk,                 // rising-edge clock
+    input  logic reset,               // synchronous reset (active high)
+    input  logic start,               // pulse to start full convolution
+
+    // Tensor ports (unpacked 3D/4D arrays)
+    input  logic signed [DATA_WIDTH-1:0]
+           input_feature [0:IN_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1],  // Q(FRAC_BITS) input features
+
+    input  logic signed [DATA_WIDTH-1:0]
+           weights [0:OUT_CHANNELS-1][0:IN_CHANNELS-1][0:KERNEL-1][0:KERNEL-1], // Q(FRAC_BITS) kernels
+
+    input  logic signed [DATA_WIDTH-1:0]
+           biases  [0:OUT_CHANNELS-1],                                   // Q(FRAC_BITS) per-output bias
+
+    output logic signed [DATA_WIDTH-1:0]
+           out_feature [0:OUT_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1],   // Q(FRAC_BITS) output features
+
+    output logic done                // pulses high for one cycle at completion
 );
 
-    // Derived constants
-    localparam signed_accum_width = DATA_WIDTH*2 + $clog2(KERNEL*KERNEL*IN_CHANNELS); // safe accumulation width
-    localparam PAD = (KERNEL-1)/2;
+    // Padding and accumulator width
+    localparam int PAD  = (KERNEL-1)/2; // zero-padding for same-size output
+    // ACCW: enough headroom for sum of (IN_CHANNELS × KERNEL×KERNEL) products
+    localparam int ACCW = DATA_WIDTH*2 + $clog2(KERNEL*KERNEL*IN_CHANNELS) + 2;
 
-    // FSM states
-    typedef enum logic [1:0] {
-        IDLE,
-        COMPUTE,
-        WRITEBACK,
-        FINISH
-    } state_t;
+    // FSM declaration
+    typedef enum logic [1:0] {IDLE, MAC, WRITE, FINISH} state_t;
+    state_t state; // Current FSM state
 
-    state_t state;
-    integer oc, ic, i, j, ki, kj;
+    // Loop indices (time-multiplexed counters)
+    integer oc, orow, ocol; // output channel / row / col
+    integer ic, kr, kc;     // input channel / kernel row / kernel col
 
-    // Accumulator (wide to hold sum of products + bias)
-    logic signed [signed_accum_width-1:0] accum;
+    // Datapath registers
+    logic signed [ACCW-1:0]         acc;  // widened accumulator (bias + sum of products)
+    logic signed [2*DATA_WIDTH-1:0] prod; // raw product (input × weight)
 
-    // Output coordinates
-    integer out_row, out_col;
+    // Saturation bounds after scaling back to Q(FRAC_BITS)
+    localparam logic signed [DATA_WIDTH-1:0] S_MAX = (1 <<< (DATA_WIDTH-1)) - 1;
+    localparam logic signed [DATA_WIDTH-1:0] S_MIN = - (1 <<< (DATA_WIDTH-1));
 
-    // Temporary product
-    logic signed [2*DATA_WIDTH-1:0] mult; // product of input * weight
-
-    // Scaling helper: after accumulation we need to right-shift by FRAC_BITS to return to same fixed point
-    // Clipping to avoid overflow when reducing width back to DATA_WIDTH
-    function logic signed [DATA_WIDTH-1:0] scale_and_saturate(input logic signed [signed_accum_width-1:0] val);
-        logic signed [signed_accum_width-1:0] shifted;
-        logic signed [DATA_WIDTH-1:0] result;
-        begin
-            // apply bias already included; shift down fractional bits
-            shifted = val >>> FRAC_BITS; // arithmetic shift
-            // saturation: clamp to signed DATA_WIDTH range
-            if (shifted > $signed({1'b0, {(DATA_WIDTH-1){1'b1}}})) begin
-                result = {1'b0, {(DATA_WIDTH-1){1'b1}}}; // max positive
-            end else if (shifted < $signed({1'b1, {(DATA_WIDTH-1){1'b0}}})) begin
-                result = {1'b1, {(DATA_WIDTH-1){1'b0}}}; // max negative (two's complement)
-            end else begin
-                result = shifted[DATA_WIDTH-1:0];
-            end
-            scale_and_saturate = result;
-        end
+    // Function: promote a DATA_WIDTH bias (Q(FRAC_BITS)) into accumulator domain (Q(FRAC_BITS)<<FRAC_BITS)
+    function automatic logic signed [ACCW-1:0]
+    bias_to_accq2f(input logic signed [DATA_WIDTH-1:0] b);
+        // Sign-extend to ACCW then left-shift by FRAC_BITS so later >>> FRAC_BITS restores scale.
+        return ({{(ACCW-DATA_WIDTH){b[DATA_WIDTH-1]}}, b}) <<< FRAC_BITS;
     endfunction
 
-    // Control logic
+    // Function: safe input fetch with implicit zero padding outside [0, IMG_SIZE)
+    function automatic logic signed [DATA_WIDTH-1:0]
+    in_at(input integer ch, input integer r, input integer c);
+        if (r < 0 || r >= IMG_SIZE || c < 0 || c >= IMG_SIZE) return '0;            // zero-pad
+        else                                                  return input_feature[ch][r][c];
+    endfunction
+
+    // debug: count how many writes clipped at +/- saturation
+    logic [31:0] sat_pos_cnt, sat_neg_cnt;
+
+    //==========================================================================
+    // Main sequential process: FSM + counters + datapath
+    //==========================================================================
     always_ff @(posedge clk) begin
         if (reset) begin
-            state     <= IDLE;
-            done      <= 0;
-            out_row   <= 0;
-            out_col   <= 0;
-            oc        <= 0;
-            ic        <= 0;
+            // Reset state, control, datapath, and debug counters
+            state <= IDLE; done <= 1'b0;
+            oc <= 0; orow <= 0; ocol <= 0;
+            ic <= 0; kr <= 0; kc <= 0;
+            acc <= '0; prod <= '0;
+            sat_pos_cnt <= 0; sat_neg_cnt <= 0;
+
         end else begin
-            case (state)
-                IDLE: begin
-                    done <= 0;
-                    if (start) begin
-                        // begin convolution over all output channels and spatial positions
-                        oc       <= 0;
-                        out_row  <= 0;
-                        out_col  <= 0;
-                        state    <= COMPUTE;
+            done <= 1'b0; // default
+
+            unique case (state)
+
+              //==============================================================
+              // IDLE: Wait for start; initialise indices and seed acc with bias
+              //==============================================================
+              IDLE: if (start) begin
+                        oc<=0; orow<=0; ocol<=0;
+                        ic<=0; kr<=0; kc<=0;
+                        acc <= bias_to_accq2f(biases[0]); // bias preload for oc=0
+                        state <= MAC;
                     end
-                end
 
-                COMPUTE: begin
-                    // compute output at [oc][out_row][out_col]
-                    accum = 0;
-                    // loop over input channels and kernel window
-                    for (ic = 0; ic < IN_CHANNELS; ic = ic + 1) begin
-                        for (ki = 0; ki < KERNEL; ki = ki + 1) begin
-                            for (kj = 0; kj < KERNEL; kj = kj + 1) begin
-                                integer in_r = out_row + ki - PAD;
-                                integer in_c = out_col + kj - PAD;
-                                logic signed [DATA_WIDTH-1:0] in_val;
-                                if (in_r < 0 || in_r >= IMG_SIZE || in_c < 0 || in_c >= IMG_SIZE) begin
-                                    in_val = 0; // zero padding
-                                end else begin
-                                    in_val = input_feature[ic][in_r][in_c];
-                                end
-                                mult = in_val * weights[oc][ic][ki][kj]; // produce 2*DATA_WIDTH bits
-                                // Align product to accumulator: product has 2*DATA_WIDTH bits, we shift to match scaling
-                                accum = accum + mult; // accumulation in wide domain
-                            end
-                        end
-                    end
-                    // add bias (bias is in same fixed-point Q format; extend to accumulator width)
-                    accum = accum + ({{(signed_accum_width-DATA_WIDTH){biases[oc][DATA_WIDTH-1]}}, biases[oc]}) <<< FRAC_BITS; // sign-extend bias
+              //==============================================================
+              // MAC: Multiply-Accumulate over all taps for current (oc,orow,ocol)
+              //  Compute coordinates of input sample under kernel window.
+              //  Blocking assign for prod so its value is used in the same cycle.
+              //  Non-blocking add into acc so the sum commits on this clock edge.
+              //  Advance kc→kr→ic; on final tap, proceed to WRITE next cycle.
+              //==============================================================
+              MAC: begin
+                    integer ir  = orow + kr - PAD;    // input row for current tap
+                    integer icc = ocol + kc - PAD;    // input col for current tap
 
-                    // write scaled, saturated result to output
-                    out_feature[oc][out_row][out_col] <= scale_and_saturate(accum);
+                    // Product (Q(FRAC_BITS)*Q(FRAC_BITS) → ~Q(2*FRAC_BITS))
+                    prod = in_at(ic, ir, icc) * weights[oc][ic][kr][kc]; // blocking
+                    acc  <= acc + prod;                                   // non-blocking
 
-                    // advance spatial counters
-                    if (out_col == IMG_SIZE-1) begin
-                        out_col <= 0;
-                        if (out_row == IMG_SIZE-1) begin
-                            out_row <= 0;
-                            // finished this output channel, move to next
+                    // Tap counters
+                    if (kc == KERNEL-1) begin
+                        kc <= 0;
+                        if (kr == KERNEL-1) begin
+                            kr <= 0;
+                            if (ic == IN_CHANNELS-1) state <= WRITE;  // all taps done
+                            else                      ic    <= ic + 1;
+                        end else kr <= kr + 1;
+                    end else kc <= kc + 1;
+                  end
+
+              //==============================================================
+              // WRITE: Scale, saturate, store; then advance spatial and (maybe) channel
+              //  Right-shift to return from accumulator scale to Q(FRAC_BITS).
+              //  Saturate to DATA_WIDTH and update clip counters.
+              //  Advance ocol → orow → oc with wrap; preload acc with next bias.
+              //==============================================================
+              WRITE: begin
+                    logic signed [ACCW-1:0]      shifted;
+                    logic signed [DATA_WIDTH-1:0] res;
+
+                    shifted = acc >>> FRAC_BITS; // back to Q(FRAC_BITS)
+
+                    // Saturate to signed DATA_WIDTH
+                    if (shifted > S_MAX) begin
+                        res <= S_MAX; sat_pos_cnt <= sat_pos_cnt + 1;
+                    end else if (shifted < S_MIN) begin
+                        res <= S_MIN; sat_neg_cnt <= sat_neg_cnt + 1;
+                    end else res <= shifted[DATA_WIDTH-1:0];
+
+                    // Commit pixel
+                    out_feature[oc][orow][ocol] <= res;
+
+                    // Spatial/channel progression and bias preload for next MAC pass
+                    if (ocol == IMG_SIZE-1) begin
+                        ocol <= 0;
+                        if (orow == IMG_SIZE-1) begin
+                            orow <= 0;
                             if (oc == OUT_CHANNELS-1) begin
-                                state <= FINISH;
+                                state <= FINISH; // all outputs done
                             end else begin
                                 oc <= oc + 1;
+                                ic<=0; kr<=0; kc<=0;
+                                acc <= bias_to_accq2f(biases[oc+1]); // preload next channel bias
+                                state <= MAC;
                             end
                         end else begin
-                            out_row <= out_row + 1;
+                            orow <= orow + 1;
+                            ic<=0; kr<=0; kc<=0;
+                            acc <= bias_to_accq2f(biases[oc]);       // same oc, next row
+                            state <= MAC;
                         end
                     end else begin
-                        out_col <= out_col + 1;
+                        ocol <= ocol + 1;
+                        ic<=0; kr<=0; kc<=0;
+                        acc <= bias_to_accq2f(biases[oc]);           // same oc, next col
+                        state <= MAC;
                     end
-                end
+                  end
 
-                FINISH: begin
-                    done <= 1;
-                    state <= IDLE; // wait for next start
-                end
-
-                default: state <= IDLE;
+              //==============================================================
+              // FINISH: Pulse done and return to IDLE
+              //==============================================================
+              FINISH: begin
+                    done  <= 1'b1;
+                    state <= IDLE;
+                  end
             endcase
         end
     end
-
 endmodule

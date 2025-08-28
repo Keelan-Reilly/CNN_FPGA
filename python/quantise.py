@@ -63,9 +63,8 @@ def main(args):
     model.load_state_dict(state_dict)
     model.eval()
 
-    # Quantisation parameters
+    # Quantisation parameter
     weight_frac = args.weight_frac  # fractional bits for weights
-    act_frac = args.act_frac        # currently unused in weight export but kept for future use
 
     # Quantise all relevant parameters
     q_conv_w = quantise_tensor(model.conv1.weight.data, weight_frac)
@@ -86,7 +85,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Quantise trained CNN and export fixed-point weights to .mem")
     parser.add_argument('--model-dir', type=str, default='./output', help="Directory containing small_cnn.pth")
     parser.add_argument('--out-dir', type=str, default='./weights', help="Output directory for .mem files")
-    parser.add_argument('--weight-frac', type=int, default=7, help="Fractional bits used for weights (e.g., 7 means Q?.7)")
+    parser.add_argument('--weight-frac', type=int, default=7, help="Fractional bits used for weights (e.g., 7 means Q X.7)")
     parser.add_argument('--act-frac', type=int, default=7, help="Fractional bits for activations (reserved for future use)")
     args = parser.parse_args()
     main(args)

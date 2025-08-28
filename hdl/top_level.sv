@@ -1,45 +1,57 @@
-// top_level.sv
+//======================================================================
+// top_level.sv — Complete CNN Inference Pipeline with UART I/O
+//----------------------------------------------------------------------
+// What this module does:
+//   • Implements a full fixed-point CNN pipeline in hardware.
+//   • Takes pixel data in over UART (one byte per pixel).
+//   • Runs it through convolution → ReLU → pooling → flatten → dense → argmax.
+//   • Outputs the predicted digit both as a binary index and as an ASCII
+//     character over UART.
+//
+// Key points:
+//   • Input:  UART byte stream of IMG_SIZE×IMG_SIZE grayscale pixels.
+//   • Output: predicted digit (0–9) on `predicted_digit`, and ASCII digit
+//             sent back over UART.
+//   • Control: an FSM controller starts each stage once the previous stage is
+//     finished.
+//   • Performance timestamps are printed (sim only) to show cycle counts.
+//======================================================================
+
 module top_level #(
-    parameter DATA_WIDTH   = 16,
-    parameter FRAC_BITS    = 7,
-    parameter IMG_SIZE     = 28,
-    parameter IN_CHANNELS  = 1,
-    parameter OUT_CHANNELS = 8,
-    parameter NUM_CLASSES  = 10,
-    parameter CLKS_PER_BIT = 434  // set for your sim clock vs 115200 baud
+    parameter int DATA_WIDTH   = 16,
+    parameter int FRAC_BITS    = 7,
+    parameter int IMG_SIZE     = 28,
+    parameter int IN_CHANNELS  = 1,
+    parameter int OUT_CHANNELS = 8,
+    parameter int NUM_CLASSES  = 10,
+    parameter int CLK_FREQ_HZ = 100_000_000,
+    parameter int BAUD_RATE   = 115_200,
+    localparam int CLKS_PER_BIT = CLK_FREQ_HZ / BAUD_RATE
 )(
     input  logic clk,
     input  logic reset,
     input  logic uart_rx_i,
     output logic uart_tx_o,
-
-    output logic [3:0] predicted_digit
+    output logic [3:0] predicted_digit   // final CNN prediction (0–9)
 );
-    // ---------------- Memories / feature maps ----------------
-    // Input (one channel)
-    logic signed [DATA_WIDTH-1:0] ifmap   [0:IN_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1];
 
-    // After conv/relu (28x28 * OUT_CHANNELS)
+    // ---------------- Memories / feature maps ----------------
+    // Buffers to hold feature maps between layers
+    logic signed [DATA_WIDTH-1:0] ifmap   [0:IN_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1];
     logic signed [DATA_WIDTH-1:0] conv_out[0:OUT_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1];
     logic signed [DATA_WIDTH-1:0] relu_out[0:OUT_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1];
 
-    // After pool (14x14 * OUT_CHANNELS)
-    localparam POOLED = IMG_SIZE/2;
+    localparam int POOLED = IMG_SIZE/2;
+    localparam int FLAT   = OUT_CHANNELS*POOLED*POOLED;
+
     logic signed [DATA_WIDTH-1:0] pool_out[0:OUT_CHANNELS-1][0:POOLED-1][0:POOLED-1];
-
-    // Flattened vector for dense
-    localparam FLAT = OUT_CHANNELS*POOLED*POOLED; // 8*14*14=1568
     logic signed [DATA_WIDTH-1:0] flat_vec[0:FLAT-1];
-
-    // Dense output (logits)
-    logic signed [DATA_WIDTH-1:0] logits[0:NUM_CLASSES-1];
+    logic signed [DATA_WIDTH-1:0] logits  [0:NUM_CLASSES-1];
 
     // ---------------- Weights / biases ----------------
-    // conv1: [out][in][3][3]
+    // Loaded from memory files in simulation
     logic signed [DATA_WIDTH-1:0] conv_w [0:OUT_CHANNELS-1][0:IN_CHANNELS-1][0:2][0:2];
     logic signed [DATA_WIDTH-1:0] conv_b [0:OUT_CHANNELS-1];
-
-    // dense: [out][in]
     logic signed [DATA_WIDTH-1:0] dense_w[0:NUM_CLASSES-1][0:FLAT-1];
     logic signed [DATA_WIDTH-1:0] dense_b[0:NUM_CLASSES-1];
 
@@ -52,33 +64,41 @@ module top_level #(
     end
 `endif
 
-    // ---------------- UART: receive 28x28=784 bytes ----------------
+    // ---------------- UART RX (load pixels) ----------------
+    // UART receiver pulls in one byte at a time. Pixels are expanded
+    // to fixed-point by shifting left by FRAC_BITS.
     logic       rx_dv;
     logic [7:0] rx_byte;
-    uart_rx #(.CLKS_PER_BIT(CLKS_PER_BIT)) RX (.clk, .reset, .rx(uart_rx_i), .rx_dv(rx_dv), .rx_byte(rx_byte));
+    uart_rx #(.CLKS_PER_BIT(CLKS_PER_BIT)) RX (
+        .clk, .reset, .rx(uart_rx_i), .rx_dv(rx_dv), .rx_byte(rx_byte)
+    );
 
-    // buffer pixels into ifmap[0][r][c] (unsigned 0..255 -> fixed-point)
+    // Store received pixels into ifmap[0], row by row
     integer r, c;
     logic frame_loaded;
     always_ff @(posedge clk) begin
-        if (reset) begin r<=0; c<=0; frame_loaded<=0; end
-        else begin
+        if (reset) begin
+            r <= 0; c <= 0; frame_loaded <= 1'b0;
+        end else begin
             frame_loaded <= 1'b0;
             if (rx_dv) begin
-                ifmap[0][r][c] <= $signed({8'd0, rx_byte}) <<< FRAC_BITS; // Q format load
+                ifmap[0][r][c] <= $signed({8'd0, rx_byte}) <<< FRAC_BITS;
                 if (c == IMG_SIZE-1) begin
                     c <= 0;
-                    if (r == IMG_SIZE-1) begin r <= 0; frame_loaded <= 1'b1; end
-                    else r <= r + 1;
+                    if (r == IMG_SIZE-1) begin
+                        r <= 0;
+                        frame_loaded <= 1'b1; // whole frame loaded
+                    end else r <= r + 1;
                 end else c <= c + 1;
             end
         end
     end
 
-    // ---------------- Stage instances ----------------
+    // ---------------- CNN stages ----------------
     logic conv_start, relu_start, pool_start, dense_start, tx_start;
     logic conv_done,  relu_done,  pool_done,  dense_done;
 
+    // Convolution stage
     conv2d #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
         .IN_CHANNELS(IN_CHANNELS), .OUT_CHANNELS(OUT_CHANNELS),
@@ -91,6 +111,7 @@ module top_level #(
         .done(conv_done)
     );
 
+    // ReLU activation
     relu #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
         .CHANNELS(OUT_CHANNELS), .IMG_SIZE(IMG_SIZE)
@@ -100,34 +121,29 @@ module top_level #(
         .done(relu_done)
     );
 
+    // Max pooling (2×2)
     maxpool #(
-        .DATA_WIDTH(DATA_WIDTH), .CHANNELS(OUT_CHANNELS), .IN_SIZE(IMG_SIZE), .POOL(2)
+        .DATA_WIDTH(DATA_WIDTH), .CHANNELS(OUT_CHANNELS),
+        .IN_SIZE(IMG_SIZE), .POOL(2)
     ) u_pool (
         .clk, .reset, .start(pool_start),
         .in_feature(relu_out), .out_feature(pool_out),
         .done(pool_done)
     );
 
-    // declare flat_done pulse instead of 'flattened' lingering signal
-    logic flattening;
-    logic flat_done;
-
-    // Flatten control counters
+    // Flatten pooled feature maps into 1D vector
+    logic flattening, flat_done;
     integer fi_c, fi_r, fi_q, fi_idx;
-
-    // in the flattening block, make flat_done a 1-cycle pulse when flatten finishes
     always_ff @(posedge clk) begin
         if (reset) begin
             flattening <= 1'b0; flat_done <= 1'b0;
             fi_c <= 0; fi_r <= 0; fi_q <= 0; fi_idx <= 0;
         end else begin
-            flat_done <= 1'b0;  // default
-
+            flat_done <= 1'b0;
             if (pool_done && !flattening) begin
                 flattening <= 1'b1;
                 fi_c <= 0; fi_r <= 0; fi_q <= 0; fi_idx <= 0;
             end
-
             if (flattening) begin
                 flat_vec[fi_idx] <= pool_out[fi_c][fi_r][fi_q];
                 if (fi_q == POOLED-1) begin
@@ -136,7 +152,7 @@ module top_level #(
                         fi_r <= 0;
                         if (fi_c == OUT_CHANNELS-1) begin
                             flattening <= 1'b0;
-                            flat_done  <= 1'b1;  // <-- one-cycle pulse
+                            flat_done  <= 1'b1; // finished flattening
                         end else fi_c <= fi_c + 1;
                     end else fi_r <= fi_r + 1;
                 end else fi_q <= fi_q + 1;
@@ -145,34 +161,27 @@ module top_level #(
         end
     end
 
+    // Dense (fully-connected) layer
     dense #(
-        .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS), .IN_DIM(FLAT), .OUT_DIM(NUM_CLASSES)
+        .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
+        .IN_DIM(FLAT), .OUT_DIM(NUM_CLASSES)
     ) u_dense (
         .clk, .reset, .start(dense_start),
         .in_vec(flat_vec), .weights(dense_w), .biases(dense_b),
         .out_vec(logits), .done(dense_done)
     );
 
-    // Argmax
+    // Argmax layer: pick index of max logit = predicted class
     logic argmax_done;
-    argmax #(.DATA_WIDTH(DATA_WIDTH), .DIM(NUM_CLASSES)) u_argmax (
-        .clk, .reset, .start(dense_done), // start when dense finishes
+    localparam int IDXW = (NUM_CLASSES <= 1) ? 1 : $clog2(NUM_CLASSES);
+    argmax #(.DATA_WIDTH(DATA_WIDTH), .DIM(NUM_CLASSES), .IDXW(IDXW)) u_argmax (
+        .clk, .reset, .start(dense_done),
         .vec(logits), .idx(predicted_digit), .done(argmax_done)
     );
 
-    // ---------------- FSM to run the chain ----------------
-    // tx_ready = argmax_done (we send one byte)
+    // ---------------- UART TX (send prediction) ----------------
+    // Send predicted digit back as ASCII character
     logic tx_ready = argmax_done;
-    // controller instance: add flat_done input, remove unused .busy()
-    fsm_controller ctrl (
-        .clk, .reset,
-        .frame_loaded(frame_loaded),
-        .conv_done, .relu_done, .pool_done, .flat_done, .dense_done, .tx_ready,
-        .conv_start, .relu_start, .pool_start, .dense_start, .tx_start,
-        .busy()
-    );
-
-    // ---------------- UART TX: send ASCII '0'+digit ----------------
     logic        tx_busy;
     logic        tx_dv;
     logic [7:0]  tx_byte;
@@ -185,4 +194,62 @@ module top_level #(
         .clk, .reset, .tx_dv(tx_dv), .tx_byte(tx_byte),
         .tx(uart_tx_o), .tx_busy(tx_busy)
     );
+
+    // FSM controller coordinates pipeline stage enables
+    fsm_controller ctrl (
+        .clk, .reset,
+        .frame_loaded(frame_loaded),
+        .conv_done, .relu_done, .pool_done, .flat_done, .dense_done,
+        .tx_ready, .tx_busy,
+        .conv_start, .relu_start, .pool_start, .dense_start, .tx_start,
+        .busy()
+    );
+
+    // ---------------- Performance measurement (simulation only) ----------------
+    // Cycle counter and timestamps for each stage
+    logic [63:0] cycle_ctr;
+    logic [63:0] t_start, t_conv, t_relu, t_pool, t_flat, t_dense, t_argmax, t_tx;
+
+    always_ff @(posedge clk) begin
+        if (reset) cycle_ctr <= 64'd0;
+        else       cycle_ctr <= cycle_ctr + 64'd1;
+    end
+
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            t_start<=0; t_conv<=0; t_relu<=0; t_pool<=0;
+            t_flat<=0; t_dense<=0; t_argmax<=0; t_tx<=0;
+        end else begin
+            if (frame_loaded) t_start  <= cycle_ctr;
+            if (conv_done)    t_conv   <= cycle_ctr;
+            if (relu_done)    t_relu   <= cycle_ctr;
+            if (pool_done)    t_pool   <= cycle_ctr;
+            if (flat_done)    t_flat   <= cycle_ctr;
+            if (dense_done)   t_dense  <= cycle_ctr;
+            if (argmax_done)  t_argmax <= cycle_ctr;
+            if (tx_start)     t_tx     <= cycle_ctr;
+        end
+    end
+
+    // Display results (1 cycle after tx_start for updated values)
+    logic tx_start_q;
+    always_ff @(posedge clk) begin
+        if (reset) tx_start_q <= 1'b0;
+        else       tx_start_q <= tx_start;
+    end
+
+    always_ff @(posedge clk) begin
+        if (!reset && tx_start_q) begin
+            $display("---- Performance Report ----");
+            $display("Frame cycles: %0d", t_tx - t_start);
+            $display(" conv  = %0d",      t_conv   - t_start);
+            $display(" relu  = %0d",      t_relu   - t_conv);
+            $display(" pool  = %0d",      t_pool   - t_relu);
+            $display(" flat  = %0d",      t_flat   - t_pool);
+            $display(" dense = %0d",      t_dense  - t_flat);
+            $display(" argmx = %0d",      t_tx     - t_dense);
+            $display("----------------------------");
+        end
+    end
+
 endmodule
