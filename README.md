@@ -15,7 +15,8 @@ It demonstrates how neural network inference can be run entirely in RTL using pi
 ---
 
 ### Architecture Pipeline
-- UART input → conv2d → relu → maxpool → flatten → dense → argmax → UART output
+- UART input → conv2d → relu → maxpool → dense → argmax → UART output
+- *flattening is handled internally between maxpool and dense*
 - Stages are pipelined with valid/ready handshakes and run sequentially.
 - Inference begins after 256 bytes (16×16) are received via UART.
 
@@ -28,11 +29,9 @@ It demonstrates how neural network inference can be run entirely in RTL using pi
 - **hdl/conv2d.sv** — Performs sliding window convolution with quantised weights and zero-padding.
 - **hdl/relu.sv** — Implements element-wise ReLU activation.
 - **hdl/maxpool.sv** — Executes 2×2 max pooling for downsampling.
-- **hdl/flatten.sv** — Flattens 2D feature maps into a 1D vector.
 - **hdl/dense.sv** — Fully connected layer using integer-weight MAC operations.
 - **hdl/argmax.sv** — Selects the neuron with the highest activation.
-- **hdl/uart_rx.sv** — UART receiver (8N1 format) for input data.
-- **hdl/uart_tx.sv** — UART transmitter for sending prediction results (digits 0–9).
+- **hdl/uart.sv** — UART receiver (8N1 format) for input data. UART transmitter for sending prediction results (digits 0–9).
 
 ---
 
@@ -41,25 +40,6 @@ It demonstrates how neural network inference can be run entirely in RTL using pi
 - obj_dir/ — Verilator build output.
 
 ---
-
-## Makefile targets
-
-```bash
-# Default: build + run full inference pipeline
-make
-
-# Build only
-make build
-
-# Run only (assumes build done)
-make run
-
-# Unit test for conv2d
-make run_conv2d
-
-# Clean output files
-make clean
-```
 
 # Quick Start
 
@@ -101,8 +81,8 @@ This CNN classifies 16×16 grayscale digit images using the following sequence o
     - 2×2 window, stride 2  
     - Output: 7×7 feature map
 
-4. **Flatten**  
-    - Converts 2D feature map to 1D vector (size 49)
+4. (*Flattening is handled implicitly*)  
+    - The 7×7 pooled feature map is read linearly and fed directly into the dense layer.
 
 5. **Dense (Fully Connected) Layer**  
     - 10 outputs (one per digit 0–9)  
@@ -165,7 +145,7 @@ This CNN classifies 16×16 grayscale digit images using the following sequence o
     - Signals `frame_loaded` to start the pipeline
 
 2. **Pipeline Control**
-    - Finite State Machine (FSM) activates each stage in sequence: conv → relu → pool → flat → dense → argmax
+    - Finite State Machine (FSM) activates each stage in sequence: conv → relu → pool → dense → argmax
 
 3. **TX Output**
     - Argmax result (digit 0–9) is transmitted via UART
