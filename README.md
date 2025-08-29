@@ -150,9 +150,6 @@ This CNN classifies 16×16 grayscale digit images using the following sequence o
 │  └─ verify_fixed_point.py  # validate fixed-point correctness
 ├─ tb/
 │  └─ tb_full_pipeline.cpp   # C++ Verilator testbench
-├─ uart_digit.txt             # sample UART input
-├─ uart_out.txt               # UART output prediction
-├─ wave.vcd                   # VCD waveform output
 ├─ Makefile
 ├─ .gitignore
 └─ README.md                  

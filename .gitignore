@@ -1,1 +1,33 @@
-wave.vcd
+# Python virtual environments
+.venv/
+venv/
+
+# PyTorch / model outputs
+*.pth
+*.pt
+
+# Simulation outputs
+obj_dir/
+*.vcd
+*.log
+*.csv
+*.out
+*.bin
+
+# MNIST data
+data/MNIST/
+data/MNIST/**
+
+# Generated memory files
+weights/*.mem
+weights/*.bin
+
+# PyTorch or Python cache
+__pycache__/
+*.pyc
+
+# MacOS junk
+.DS_Store
+
+uart_digit.txt
+uart_out.txt
