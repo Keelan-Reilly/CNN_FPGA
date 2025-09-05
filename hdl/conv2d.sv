@@ -24,27 +24,19 @@ module conv2d #(
     parameter int IN_CHANNELS  = 1,   // number of input feature maps
     parameter int OUT_CHANNELS = 8,   // number of output feature maps (kernels)
     parameter int KERNEL       = 3,   // kernel size (assumed odd; e.g. 3, 5, 7)
-    parameter int IMG_SIZE     = 28   // square image size (HxW)
+    parameter int IMG_SIZE     = 28,   // square image size (HxW)
+    parameter string WEIGHTS_FILE = "conv1_weights.mem",
+    parameter string BIASES_FILE  = "conv1_biases.mem"
 )(
     // Clock / control
     input  logic clk,                 // rising-edge clock
     input  logic reset,               // synchronous reset (active high)
     input  logic start,               // pulse to start full convolution
 
-    // Tensor ports (unpacked 3D/4D arrays)
-    input  logic signed [DATA_WIDTH-1:0]
-           input_feature [0:IN_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1],  // Q(FRAC_BITS) input features
+    input  logic signed [DATA_WIDTH-1:0] input_feature_flat [0:IN_CHANNELS*IMG_SIZE*IMG_SIZE-1],
+    output logic signed [DATA_WIDTH-1:0] out_feature_flat   [0:OUT_CHANNELS*IMG_SIZE*IMG_SIZE-1],
 
-    input  logic signed [DATA_WIDTH-1:0]
-           weights [0:OUT_CHANNELS-1][0:IN_CHANNELS-1][0:KERNEL-1][0:KERNEL-1], // Q(FRAC_BITS) kernels
-
-    input  logic signed [DATA_WIDTH-1:0]
-           biases  [0:OUT_CHANNELS-1],                                   // Q(FRAC_BITS) per-output bias
-
-    output logic signed [DATA_WIDTH-1:0]
-           out_feature [0:OUT_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1],   // Q(FRAC_BITS) output features
-
-    output logic done                // pulses high for one cycle at completion
+    output logic done                 // pulses high for one cycle on completion
 );
 
     // Padding and accumulator width

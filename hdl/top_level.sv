@@ -34,35 +34,20 @@ module top_level #(
     output logic uart_tx_o,
     output logic [3:0] predicted_digit   // final CNN prediction (0–9)
 );
+    // ---------------- Flattened geometry helpers ----------------
+    localparam int IF_SZ   = IN_CHANNELS  * IMG_SIZE * IMG_SIZE;
+    localparam int OF_SZ   = OUT_CHANNELS * IMG_SIZE * IMG_SIZE;
+    localparam int POOLED  = IMG_SIZE/2;
+    localparam int PO_SZ   = OUT_CHANNELS * POOLED * POOLED;
+    localparam int FLAT    = PO_SZ;
 
-    // ---------------- Memories / feature maps ----------------
-    // Buffers to hold feature maps between layers
-    logic signed [DATA_WIDTH-1:0] ifmap   [0:IN_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1];
-    logic signed [DATA_WIDTH-1:0] conv_out[0:OUT_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1];
-    logic signed [DATA_WIDTH-1:0] relu_out[0:OUT_CHANNELS-1][0:IMG_SIZE-1][0:IMG_SIZE-1];
-
-    localparam int POOLED = IMG_SIZE/2;
-    localparam int FLAT   = OUT_CHANNELS*POOLED*POOLED;
-
-    logic signed [DATA_WIDTH-1:0] pool_out[0:OUT_CHANNELS-1][0:POOLED-1][0:POOLED-1];
-    logic signed [DATA_WIDTH-1:0] flat_vec[0:FLAT-1];
-    logic signed [DATA_WIDTH-1:0] logits  [0:NUM_CLASSES-1];
-
-    // ---------------- Weights / biases ----------------
-    // Loaded from memory files in simulation
-    logic signed [DATA_WIDTH-1:0] conv_w [0:OUT_CHANNELS-1][0:IN_CHANNELS-1][0:2][0:2];
-    logic signed [DATA_WIDTH-1:0] conv_b [0:OUT_CHANNELS-1];
-    logic signed [DATA_WIDTH-1:0] dense_w[0:NUM_CLASSES-1][0:FLAT-1];
-    logic signed [DATA_WIDTH-1:0] dense_b[0:NUM_CLASSES-1];
-
-`ifdef VERILATOR
-    initial begin
-        $readmemh("weights/conv1_weights.mem", conv_w);
-        $readmemh("weights/conv1_biases.mem",  conv_b);
-        $readmemh("weights/fc1_weights.mem",   dense_w);
-        $readmemh("weights/fc1_biases.mem",    dense_b);
-    end
-`endif
+    // ---------------- Flattened feature buffers ----------------
+    logic signed [DATA_WIDTH-1:0] ifmap_flat [0:IF_SZ-1];
+    logic signed [DATA_WIDTH-1:0] conv_out_flat [0:OF_SZ-1];
+    logic signed [DATA_WIDTH-1:0] relu_out_flat [0:OF_SZ-1];
+    logic signed [DATA_WIDTH-1:0] pool_out_flat [0:PO_SZ-1];
+    logic signed [DATA_WIDTH-1:0] flat_vec      [0:FLAT-1];
+    logic signed [DATA_WIDTH-1:0] logits        [0:NUM_CLASSES-1];
 
     // ---------------- UART RX (load pixels) ----------------
     // UART receiver pulls in one byte at a time. Pixels are expanded
@@ -76,13 +61,18 @@ module top_level #(
     // Store received pixels into ifmap[0], row by row
     integer r, c;
     logic frame_loaded;
+
+    function automatic int idx3(input int ch, input int row, input int col, input int H, input int W);
+        return (ch*H + row)*W + col;
+    endfunction
+
     always_ff @(posedge clk) begin
         if (reset) begin
             r <= 0; c <= 0; frame_loaded <= 1'b0;
         end else begin
             frame_loaded <= 1'b0;
             if (rx_dv) begin
-                ifmap[0][r][c] <= $signed({8'd0, rx_byte}) <<< FRAC_BITS;
+                ifmap_flat[idx3(0, r, c, IMG_SIZE, IMG_SIZE)] <= $signed({8'd0, rx_byte}) <<< FRAC_BITS;
                 if (c == IMG_SIZE-1) begin
                     c <= 0;
                     if (r == IMG_SIZE-1) begin
@@ -98,16 +88,17 @@ module top_level #(
     logic conv_start, relu_start, pool_start, dense_start, tx_start;
     logic conv_done,  relu_done,  pool_done,  dense_done;
 
-    // Convolution stage
+    // Convolution stage (loads weights/biases internally from .mem)
     conv2d #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
         .IN_CHANNELS(IN_CHANNELS), .OUT_CHANNELS(OUT_CHANNELS),
-        .KERNEL(3), .IMG_SIZE(IMG_SIZE)
+        .KERNEL(3), .IMG_SIZE(IMG_SIZE),
+        .WEIGHTS_FILE("conv1_weights.mem"),
+        .BIASES_FILE ("conv1_biases.mem")
     ) u_conv (
         .clk, .reset, .start(conv_start),
-        .input_feature(ifmap),
-        .weights(conv_w), .biases(conv_b),
-        .out_feature(conv_out),
+        .input_feature_flat(ifmap_flat),
+        .out_feature_flat(conv_out_flat),
         .done(conv_done)
     );
 
@@ -117,7 +108,8 @@ module top_level #(
         .CHANNELS(OUT_CHANNELS), .IMG_SIZE(IMG_SIZE)
     ) u_relu (
         .clk, .reset, .start(relu_start),
-        .in_feature(conv_out), .out_feature(relu_out),
+        .in_feature_flat(conv_out_flat),
+        .out_feature_flat(relu_out_flat),
         .done(relu_done)
     );
 
@@ -127,47 +119,42 @@ module top_level #(
         .IN_SIZE(IMG_SIZE), .POOL(2)
     ) u_pool (
         .clk, .reset, .start(pool_start),
-        .in_feature(relu_out), .out_feature(pool_out),
+        .in_feature_flat(relu_out_flat),
+        .out_feature_flat(pool_out_flat),
         .done(pool_done)
     );
 
     // Flatten pooled feature maps into 1D vector
     logic flattening, flat_done;
-    integer fi_c, fi_r, fi_q, fi_idx;
+    integer fi_idx;
     always_ff @(posedge clk) begin
         if (reset) begin
-            flattening <= 1'b0; flat_done <= 1'b0;
-            fi_c <= 0; fi_r <= 0; fi_q <= 0; fi_idx <= 0;
+            flattening <= 1'b0; flat_done <= 1'b0; fi_idx <= 0;
         end else begin
             flat_done <= 1'b0;
             if (pool_done && !flattening) begin
                 flattening <= 1'b1;
-                fi_c <= 0; fi_r <= 0; fi_q <= 0; fi_idx <= 0;
+                fi_idx <= 0;
             end
             if (flattening) begin
-                flat_vec[fi_idx] <= pool_out[fi_c][fi_r][fi_q];
-                if (fi_q == POOLED-1) begin
-                    fi_q <= 0;
-                    if (fi_r == POOLED-1) begin
-                        fi_r <= 0;
-                        if (fi_c == OUT_CHANNELS-1) begin
-                            flattening <= 1'b0;
-                            flat_done  <= 1'b1; // finished flattening
-                        end else fi_c <= fi_c + 1;
-                    end else fi_r <= fi_r + 1;
-                end else fi_q <= fi_q + 1;
-                fi_idx <= fi_idx + 1;
+                flat_vec[fi_idx] <= pool_out_flat[fi_idx];
+                if (fi_idx == FLAT-1) begin
+                    flattening <= 1'b0;
+                    flat_done  <= 1'b1;
+                end else fi_idx <= fi_idx + 1;
             end
         end
     end
 
-    // Dense (fully-connected) layer
+    // Dense (loads weights/biases internally)
     dense #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
-        .IN_DIM(FLAT), .OUT_DIM(NUM_CLASSES)
+        .IN_DIM(FLAT), .OUT_DIM(NUM_CLASSES),
+        .WEIGHTS_FILE("fc1_weights.mem"),
+        .BIASES_FILE ("fc1_biases.mem")
     ) u_dense (
         .clk, .reset, .start(dense_start),
-        .in_vec(flat_vec), .weights(dense_w), .biases(dense_b),
+        .in_vec(flat_vec),
         .out_vec(logits), .done(dense_done)
     );
 
