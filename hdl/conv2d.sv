@@ -18,174 +18,148 @@
 //======================================================================
 
 module conv2d #(
-    // Fixed-point word format and geometry
-    parameter int DATA_WIDTH   = 16,  // total bits for inputs/weights/biases/output (signed)
-    parameter int FRAC_BITS    = 7,   // fractional bits in fixed-point Q format
-    parameter int IN_CHANNELS  = 1,   // number of input feature maps
-    parameter int OUT_CHANNELS = 8,   // number of output feature maps (kernels)
-    parameter int KERNEL       = 3,   // kernel size (assumed odd; e.g. 3, 5, 7)
-    parameter int IMG_SIZE     = 28,   // square image size (HxW)
+    parameter int DATA_WIDTH   = 16,
+    parameter int FRAC_BITS    = 7,
+    parameter int IN_CHANNELS  = 1,
+    parameter int OUT_CHANNELS = 8,
+    parameter int KERNEL       = 3,
+    parameter int IMG_SIZE     = 28,
     parameter string WEIGHTS_FILE = "conv1_weights.mem",
     parameter string BIASES_FILE  = "conv1_biases.mem"
 )(
-    // Clock / control
-    input  logic clk,                 // rising-edge clock
-    input  logic reset,               // synchronous reset (active high)
-    input  logic start,               // pulse to start full convolution
+    input  logic clk,
+    input  logic reset,
+    input  logic start,
 
     input  logic signed [DATA_WIDTH-1:0] input_feature_flat [0:IN_CHANNELS*IMG_SIZE*IMG_SIZE-1],
     output logic signed [DATA_WIDTH-1:0] out_feature_flat   [0:OUT_CHANNELS*IMG_SIZE*IMG_SIZE-1],
 
-    output logic done                 // pulses high for one cycle on completion
+    output logic done
 );
+    localparam int PAD    = (KERNEL-1)/2;
+    localparam int HEIGHT = IMG_SIZE;
+    localparam int WIDTH  = IMG_SIZE;
+    localparam int IF_SZ  = IN_CHANNELS*HEIGHT*WIDTH;
+    localparam int OF_SZ  = OUT_CHANNELS*HEIGHT*WIDTH;
 
-    // Padding and accumulator width
-    localparam int PAD  = (KERNEL-1)/2; // zero-padding for same-size output
-    // ACCW: enough headroom for sum of (IN_CHANNELS × KERNEL×KERNEL) products
+    // Accumulator headroom
     localparam int ACCW = DATA_WIDTH*2 + $clog2(KERNEL*KERNEL*IN_CHANNELS) + 2;
 
-    // FSM declaration
+    // FSM
     typedef enum logic [1:0] {IDLE, MAC, WRITE, FINISH} state_t;
-    state_t state; // Current FSM state
+    state_t state;
 
-    // Loop indices (time-multiplexed counters)
-    integer oc, orow, ocol; // output channel / row / col
-    integer ic, kr, kc;     // input channel / kernel row / kernel col
+    integer oc, orow, ocol;
+    integer ic, kr, kc;
 
-    // Datapath registers
-    logic signed [ACCW-1:0]         acc;  // widened accumulator (bias + sum of products)
-    logic signed [2*DATA_WIDTH-1:0] prod; // raw product (input × weight)
+    logic signed [ACCW-1:0]         acc;
+    logic signed [2*DATA_WIDTH-1:0] prod;
 
-    // Saturation bounds after scaling back to Q(FRAC_BITS)
+    // Saturation bounds
     localparam logic signed [DATA_WIDTH-1:0] S_MAX = (1 <<< (DATA_WIDTH-1)) - 1;
     localparam logic signed [DATA_WIDTH-1:0] S_MIN = - (1 <<< (DATA_WIDTH-1));
 
-    // Function: promote a DATA_WIDTH bias (Q(FRAC_BITS)) into accumulator domain (Q(FRAC_BITS)<<FRAC_BITS)
-    function automatic logic signed [ACCW-1:0]
-    bias_to_accq2f(input logic signed [DATA_WIDTH-1:0] b);
-        // Sign-extend to ACCW then left-shift by FRAC_BITS so later >>> FRAC_BITS restores scale.
-        return ({{(ACCW-DATA_WIDTH){b[DATA_WIDTH-1]}}, b}) <<< FRAC_BITS;
+    // Indexing helpers
+    function automatic int idx3(input int ch, input int row, input int col, input int HH, input int WW);
+        return (ch*HH + row)*WW + col;
+    endfunction
+    function automatic int w_idx(input int och, input int ich, input int r, input int c);
+        return (((och*IN_CHANNELS + ich)*KERNEL + r)*KERNEL + c);
     endfunction
 
-    // Function: safe input fetch with implicit zero padding outside [0, IMG_SIZE)
+    // ---------------- Internal ROMs for weights/biases ----------------
+    localparam int W_DEPTH = OUT_CHANNELS*IN_CHANNELS*KERNEL*KERNEL;
+    (* ram_style = "block" *) logic signed [DATA_WIDTH-1:0] W_rom [0:W_DEPTH-1];
+    (* ram_style = "block" *) logic signed [DATA_WIDTH-1:0] B_rom [0:OUT_CHANNELS-1];
+
+    initial begin
+        $readmemh(WEIGHTS_FILE, W_rom);
+        $readmemh(BIASES_FILE,  B_rom);
+    end
+
+    // Safe input fetch with zero padding
     function automatic logic signed [DATA_WIDTH-1:0]
-    in_at(input integer ch, input integer r, input integer c);
-        if (r < 0 || r >= IMG_SIZE || c < 0 || c >= IMG_SIZE) return '0;            // zero-pad
-        else                                                  return input_feature[ch][r][c];
+    in_at(input int ch, input int r, input int c);
+        if (r < 0 || r >= HEIGHT || c < 0 || c >= WIDTH) return '0;
+        else return input_feature_flat[idx3(ch, r, c, HEIGHT, WIDTH)];
     endfunction
 
-    // debug: count how many writes clipped at +/- saturation
-    logic [31:0] sat_pos_cnt, sat_neg_cnt;
-
-    //==========================================================================
-    // Main sequential process: FSM + counters + datapath
-    //==========================================================================
+    // Main FSM
     always_ff @(posedge clk) begin
         if (reset) begin
-            // Reset state, control, datapath, and debug counters
             state <= IDLE; done <= 1'b0;
-            oc <= 0; orow <= 0; ocol <= 0;
-            ic <= 0; kr <= 0; kc <= 0;
+            oc<=0; orow<=0; ocol<=0;
+            ic<=0; kr<=0; kc<=0;
             acc <= '0; prod <= '0;
-            sat_pos_cnt <= 0; sat_neg_cnt <= 0;
-
         end else begin
-            done <= 1'b0; // default
+            done <= 1'b0;
 
             unique case (state)
-
-              //==============================================================
-              // IDLE: Wait for start; initialise indices and seed acc with bias
-              //==============================================================
               IDLE: if (start) begin
                         oc<=0; orow<=0; ocol<=0;
                         ic<=0; kr<=0; kc<=0;
-                        acc <= bias_to_accq2f(biases[0]); // bias preload for oc=0
+                        acc <= $signed({{(ACCW-DATA_WIDTH){B_rom[0][DATA_WIDTH-1]}}, B_rom[0]}) <<< FRAC_BITS;
                         state <= MAC;
                     end
 
-              //==============================================================
-              // MAC: Multiply-Accumulate over all taps for current (oc,orow,ocol)
-              //  Compute coordinates of input sample under kernel window.
-              //  Blocking assign for prod so its value is used in the same cycle.
-              //  Non-blocking add into acc so the sum commits on this clock edge.
-              //  Advance kc→kr→ic; on final tap, proceed to WRITE next cycle.
-              //==============================================================
               MAC: begin
-                    integer ir  = orow + kr - PAD;    // input row for current tap
-                    integer icc = ocol + kc - PAD;    // input col for current tap
+                    int ir  = orow + kr - PAD;
+                    int icc = ocol + kc - PAD;
 
-                    // Product (Q(FRAC_BITS)*Q(FRAC_BITS) → ~Q(2*FRAC_BITS))
-                    prod = in_at(ic, ir, icc) * weights[oc][ic][kr][kc]; // blocking
-                    acc  <= acc + prod;                                   // non-blocking
+                    prod = in_at(ic, ir, icc) * W_rom[w_idx(oc, ic, kr, kc)];
+                    acc  = acc + prod; // blocking add so WRITE sees full sum next
 
-                    // Tap counters
                     if (kc == KERNEL-1) begin
                         kc <= 0;
                         if (kr == KERNEL-1) begin
                             kr <= 0;
-                            if (ic == IN_CHANNELS-1) state <= WRITE;  // all taps done
+                            if (ic == IN_CHANNELS-1) state <= WRITE;
                             else                      ic    <= ic + 1;
                         end else kr <= kr + 1;
                     end else kc <= kc + 1;
-                  end
+                   end
 
-              //==============================================================
-              // WRITE: Scale, saturate, store; then advance spatial and (maybe) channel
-              //  Right-shift to return from accumulator scale to Q(FRAC_BITS).
-              //  Saturate to DATA_WIDTH and update clip counters.
-              //  Advance ocol → orow → oc with wrap; preload acc with next bias.
-              //==============================================================
               WRITE: begin
-                    logic signed [ACCW-1:0]      shifted;
+                    logic signed [ACCW-1:0]       shifted;
                     logic signed [DATA_WIDTH-1:0] res;
 
-                    shifted = acc >>> FRAC_BITS; // back to Q(FRAC_BITS)
+                    shifted = acc >>> FRAC_BITS;
+                    if (shifted > S_MAX)      res <= S_MAX;
+                    else if (shifted < S_MIN) res <= S_MIN;
+                    else                      res <= shifted[DATA_WIDTH-1:0];
 
-                    // Saturate to signed DATA_WIDTH
-                    if (shifted > S_MAX) begin
-                        res <= S_MAX; sat_pos_cnt <= sat_pos_cnt + 1;
-                    end else if (shifted < S_MIN) begin
-                        res <= S_MIN; sat_neg_cnt <= sat_neg_cnt + 1;
-                    end else res <= shifted[DATA_WIDTH-1:0];
+                    out_feature_flat[idx3(oc, orow, ocol, HEIGHT, WIDTH)] <= res;
 
-                    // Commit pixel
-                    out_feature[oc][orow][ocol] <= res;
-
-                    // Spatial/channel progression and bias preload for next MAC pass
-                    if (ocol == IMG_SIZE-1) begin
+                    if (ocol == WIDTH-1) begin
                         ocol <= 0;
-                        if (orow == IMG_SIZE-1) begin
+                        if (orow == HEIGHT-1) begin
                             orow <= 0;
                             if (oc == OUT_CHANNELS-1) begin
-                                state <= FINISH; // all outputs done
+                                state <= FINISH;
                             end else begin
                                 oc <= oc + 1;
                                 ic<=0; kr<=0; kc<=0;
-                                acc <= bias_to_accq2f(biases[oc+1]); // preload next channel bias
+                                acc <= $signed({{(ACCW-DATA_WIDTH){B_rom[oc+1][DATA_WIDTH-1]}}, B_rom[oc+1]}) <<< FRAC_BITS;
                                 state <= MAC;
                             end
                         end else begin
                             orow <= orow + 1;
                             ic<=0; kr<=0; kc<=0;
-                            acc <= bias_to_accq2f(biases[oc]);       // same oc, next row
+                            acc <= $signed({{(ACCW-DATA_WIDTH){B_rom[oc][DATA_WIDTH-1]}}, B_rom[oc]}) <<< FRAC_BITS;
                             state <= MAC;
                         end
                     end else begin
                         ocol <= ocol + 1;
                         ic<=0; kr<=0; kc<=0;
-                        acc <= bias_to_accq2f(biases[oc]);           // same oc, next col
+                        acc <= $signed({{(ACCW-DATA_WIDTH){B_rom[oc][DATA_WIDTH-1]}}, B_rom[oc]}) <<< FRAC_BITS;
                         state <= MAC;
                     end
-                  end
+                 end
 
-              //==============================================================
-              // FINISH: Pulse done and return to IDLE
-              //==============================================================
               FINISH: begin
                     done  <= 1'b1;
                     state <= IDLE;
-                  end
+                 end
             endcase
         end
     end

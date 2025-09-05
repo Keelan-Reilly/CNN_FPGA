@@ -15,48 +15,40 @@
 //======================================================================
 
 module maxpool #(
-    parameter int DATA_WIDTH = 16,  // bits per element
-    parameter int CHANNELS   = 8,   // number of channels
-    parameter int IN_SIZE    = 28,  // input feature map size
-    parameter int POOL       = 2    // pooling factor (default = 2×2)
+    parameter int DATA_WIDTH = 16,
+    parameter int CHANNELS   = 8,
+    parameter int IN_SIZE    = 28,
+    parameter int POOL       = 2
 )(
-    input  logic clk, reset, start, // clock, reset, control
-    input  logic signed [DATA_WIDTH-1:0]
-           in_feature [0:CHANNELS-1][0:IN_SIZE-1][0:IN_SIZE-1],
-    output logic signed [DATA_WIDTH-1:0]
-           out_feature[0:CHANNELS-1][0:(IN_SIZE/POOL)-1][0:(IN_SIZE/POOL)-1],
+    input  logic clk, reset, start,
+    input  logic signed [DATA_WIDTH-1:0] in_feature_flat  [0:CHANNELS*IN_SIZE*IN_SIZE-1],
+    output logic signed [DATA_WIDTH-1:0] out_feature_flat [0:CHANNELS*(IN_SIZE/POOL)*(IN_SIZE/POOL)-1],
     output logic done
 );
-
     localparam int OUT_SIZE = IN_SIZE/POOL;
-
-    // FSM states
     typedef enum logic [1:0] {IDLE, RUN, FINISH} state_t;
     state_t state;
-
-    // Loop indices: channel, row, column
     integer ch, r, q;
 
-    // Helper function: compute max of 4 values (used for 2×2 pooling window)
-    function automatic logic signed [DATA_WIDTH-1:0] max4(
-        input logic signed [DATA_WIDTH-1:0] a,b,x,y
+    function automatic int idx3(
+        input int ch_i, input int row_i, input int col_i,
+        input int H_i,  input int W_i
     );
-        logic signed [DATA_WIDTH-1:0] m1 = (a>b)?a:b;
-        logic signed [DATA_WIDTH-1:0] m2 = (x>y)?x:y;
-        return (m1>m2)?m1:m2;
+        return (ch_i*H_i + row_i)*W_i + col_i;
     endfunction
 
-    //==================================================================
-    // FSM: cycles through each 2×2 block, computes max, writes output
-    //==================================================================
+    function automatic logic signed [DATA_WIDTH-1:0] max2(
+        input logic signed [DATA_WIDTH-1:0] a,b
+    ); return (a>b)?a:b; endfunction
+
+    function automatic logic signed [DATA_WIDTH-1:0] max4(
+        input logic signed [DATA_WIDTH-1:0] a,b,x,y
+    ); return max2(max2(a,b), max2(x,y)); endfunction
+
     always_ff @(posedge clk) begin
         if (reset) begin
             state<=IDLE; done<=0; ch<=0; r<=0; q<=0;
         end else case (state)
-
-            //----------------------------------------------------------
-            // IDLE — wait for start
-            //----------------------------------------------------------
             IDLE: begin
                 done<=0;
                 if (start) begin
@@ -64,19 +56,14 @@ module maxpool #(
                     state<=RUN;
                 end
             end
-
-            //----------------------------------------------------------
-            // RUN — compute max over current 2×2 block
-            //----------------------------------------------------------
             RUN: begin
-                out_feature[ch][r][q] <= max4(
-                    in_feature[ch][2*r][2*q],
-                    in_feature[ch][2*r][2*q+1],
-                    in_feature[ch][2*r+1][2*q],
-                    in_feature[ch][2*r+1][2*q+1]
+                out_feature_flat[idx3(ch, r, q, OUT_SIZE, OUT_SIZE)] <= max4(
+                    in_feature_flat[idx3(ch, 2*r,   2*q,   IN_SIZE, IN_SIZE)],
+                    in_feature_flat[idx3(ch, 2*r,   2*q+1, IN_SIZE, IN_SIZE)],
+                    in_feature_flat[idx3(ch, 2*r+1, 2*q,   IN_SIZE, IN_SIZE)],
+                    in_feature_flat[idx3(ch, 2*r+1, 2*q+1, IN_SIZE, IN_SIZE)]
                 );
 
-                // Advance spatial/channel counters
                 if (q==OUT_SIZE-1) begin
                     q<=0;
                     if (r==OUT_SIZE-1) begin
@@ -86,10 +73,6 @@ module maxpool #(
                     end else r<=r+1;
                 end else q<=q+1;
             end
-
-            //----------------------------------------------------------
-            // FINISH — pulse done and return to IDLE
-            //----------------------------------------------------------
             FINISH: begin
                 done<=1;
                 state<=IDLE;

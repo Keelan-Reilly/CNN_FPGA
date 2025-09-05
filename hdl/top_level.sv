@@ -24,8 +24,8 @@ module top_level #(
     parameter int IN_CHANNELS  = 1,
     parameter int OUT_CHANNELS = 8,
     parameter int NUM_CLASSES  = 10,
-    parameter int CLK_FREQ_HZ = 100_000_000,
-    parameter int BAUD_RATE   = 115_200,
+    parameter int CLK_FREQ_HZ  = 100_000_000,
+    parameter int BAUD_RATE    = 115_200,
     localparam int CLKS_PER_BIT = CLK_FREQ_HZ / BAUD_RATE
 )(
     input  logic clk,
@@ -34,6 +34,7 @@ module top_level #(
     output logic uart_tx_o,
     output logic [3:0] predicted_digit   // final CNN prediction (0–9)
 );
+
     // ---------------- Flattened geometry helpers ----------------
     localparam int IF_SZ   = IN_CHANNELS  * IMG_SIZE * IMG_SIZE;
     localparam int OF_SZ   = OUT_CHANNELS * IMG_SIZE * IMG_SIZE;
@@ -50,18 +51,15 @@ module top_level #(
     logic signed [DATA_WIDTH-1:0] logits        [0:NUM_CLASSES-1];
 
     // ---------------- UART RX (load pixels) ----------------
-    // UART receiver pulls in one byte at a time. Pixels are expanded
-    // to fixed-point by shifting left by FRAC_BITS.
     logic       rx_dv;
     logic [7:0] rx_byte;
     uart_rx #(.CLKS_PER_BIT(CLKS_PER_BIT)) RX (
         .clk, .reset, .rx(uart_rx_i), .rx_dv(rx_dv), .rx_byte(rx_byte)
     );
 
-    // Store received pixels into ifmap[0], row by row
+    // Store received pixels into ifmap_flat (channel 0), row by row
     integer r, c;
     logic frame_loaded;
-
     function automatic int idx3(input int ch, input int row, input int col, input int H, input int W);
         return (ch*H + row)*W + col;
     endfunction
@@ -93,8 +91,8 @@ module top_level #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
         .IN_CHANNELS(IN_CHANNELS), .OUT_CHANNELS(OUT_CHANNELS),
         .KERNEL(3), .IMG_SIZE(IMG_SIZE),
-        .WEIGHTS_FILE("conv1_weights.mem"),
-        .BIASES_FILE ("conv1_biases.mem")
+        .WEIGHTS_FILE("weights/conv1_weights.mem"),  // remove directory in vivado
+        .BIASES_FILE ("weights/conv1_biases.mem")    // remove directory in vivado
     ) u_conv (
         .clk, .reset, .start(conv_start),
         .input_feature_flat(ifmap_flat),
@@ -102,7 +100,7 @@ module top_level #(
         .done(conv_done)
     );
 
-    // ReLU activation
+    // ReLU activation (flattened)
     relu #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
         .CHANNELS(OUT_CHANNELS), .IMG_SIZE(IMG_SIZE)
@@ -113,7 +111,7 @@ module top_level #(
         .done(relu_done)
     );
 
-    // Max pooling (2×2)
+    // Max pooling (2×2), flattened
     maxpool #(
         .DATA_WIDTH(DATA_WIDTH), .CHANNELS(OUT_CHANNELS),
         .IN_SIZE(IMG_SIZE), .POOL(2)
@@ -124,7 +122,7 @@ module top_level #(
         .done(pool_done)
     );
 
-    // Flatten pooled feature maps into 1D vector
+    // Flatten stage: simple linear copy to preserve pipeline / FSM timing
     logic flattening, flat_done;
     integer fi_idx;
     always_ff @(posedge clk) begin
@@ -150,8 +148,8 @@ module top_level #(
     dense #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
         .IN_DIM(FLAT), .OUT_DIM(NUM_CLASSES),
-        .WEIGHTS_FILE("fc1_weights.mem"),
-        .BIASES_FILE ("fc1_biases.mem")
+        .WEIGHTS_FILE("weights/fc1_weights.mem"), // remove directory in vivado
+        .BIASES_FILE ("weights/fc1_biases.mem")  // remove directory in vivado
     ) u_dense (
         .clk, .reset, .start(dense_start),
         .in_vec(flat_vec),
@@ -167,7 +165,6 @@ module top_level #(
     );
 
     // ---------------- UART TX (send prediction) ----------------
-    // Send predicted digit back as ASCII character
     logic tx_ready = argmax_done;
     logic        tx_busy;
     logic        tx_dv;
@@ -182,18 +179,18 @@ module top_level #(
         .tx(uart_tx_o), .tx_busy(tx_busy)
     );
 
-    // FSM controller coordinates pipeline stage enables
+    // FSM controller unchanged
+    logic pipeline_busy;
     fsm_controller ctrl (
         .clk, .reset,
         .frame_loaded(frame_loaded),
         .conv_done, .relu_done, .pool_done, .flat_done, .dense_done,
         .tx_ready, .tx_busy,
         .conv_start, .relu_start, .pool_start, .dense_start, .tx_start,
-        .busy()
+        .busy(pipeline_busy)
     );
 
-    // ---------------- Performance measurement (simulation only) ----------------
-    // Cycle counter and timestamps for each stage
+    // ---------------- Performance (sim only) ----------------
     logic [63:0] cycle_ctr;
     logic [63:0] t_start, t_conv, t_relu, t_pool, t_flat, t_dense, t_argmax, t_tx;
 
@@ -202,11 +199,14 @@ module top_level #(
         else       cycle_ctr <= cycle_ctr + 64'd1;
     end
 
+    logic tx_start_q;
     always_ff @(posedge clk) begin
         if (reset) begin
             t_start<=0; t_conv<=0; t_relu<=0; t_pool<=0;
             t_flat<=0; t_dense<=0; t_argmax<=0; t_tx<=0;
+            tx_start_q <= 1'b0;
         end else begin
+            tx_start_q <= tx_start;
             if (frame_loaded) t_start  <= cycle_ctr;
             if (conv_done)    t_conv   <= cycle_ctr;
             if (relu_done)    t_relu   <= cycle_ctr;
@@ -215,28 +215,17 @@ module top_level #(
             if (dense_done)   t_dense  <= cycle_ctr;
             if (argmax_done)  t_argmax <= cycle_ctr;
             if (tx_start)     t_tx     <= cycle_ctr;
+            if (tx_start_q) begin
+                $display("---- Performance Report ----");
+                $display("Frame cycles: %0d", t_tx - t_start);
+                $display(" conv  = %0d",      t_conv   - t_start);
+                $display(" relu  = %0d",      t_relu   - t_conv);
+                $display(" pool  = %0d",      t_pool   - t_relu);
+                $display(" flat  = %0d",      t_flat   - t_pool);
+                $display(" dense = %0d",      t_dense  - t_flat);
+                $display(" argmx = %0d",      t_tx     - t_dense);
+                $display("----------------------------");
+            end
         end
     end
-
-    // Display results (1 cycle after tx_start for updated values)
-    logic tx_start_q;
-    always_ff @(posedge clk) begin
-        if (reset) tx_start_q <= 1'b0;
-        else       tx_start_q <= tx_start;
-    end
-
-    always_ff @(posedge clk) begin
-        if (!reset && tx_start_q) begin
-            $display("---- Performance Report ----");
-            $display("Frame cycles: %0d", t_tx - t_start);
-            $display(" conv  = %0d",      t_conv   - t_start);
-            $display(" relu  = %0d",      t_relu   - t_conv);
-            $display(" pool  = %0d",      t_pool   - t_relu);
-            $display(" flat  = %0d",      t_flat   - t_pool);
-            $display(" dense = %0d",      t_dense  - t_flat);
-            $display(" argmx = %0d",      t_tx     - t_dense);
-            $display("----------------------------");
-        end
-    end
-
 endmodule
