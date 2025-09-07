@@ -1,10 +1,9 @@
 import torch
-from torchvision import transforms
 import numpy as np
 
 # load sample batch
 d = torch.load("./output/sample_batch.pt")
-img = d['images'][0].squeeze(0).numpy()  # [28,28] in [0,1]
+img = d["images"][0].squeeze(0).numpy()  # [28,28] in [0,1]
 bytes_ = np.clip(np.rint(img * 255), 0, 255).astype(np.uint8)
 
 # save as .mem file (hex format)
