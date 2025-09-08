@@ -17,6 +17,7 @@
 //   • Performance timestamps are printed (sim only) to show cycle counts.
 //======================================================================
 
+(* keep_hierarchy = "yes" *)
 module top_level #(
     parameter int DATA_WIDTH   = 16,
     parameter int FRAC_BITS    = 7,
@@ -25,8 +26,7 @@ module top_level #(
     parameter int OUT_CHANNELS = 8,
     parameter int NUM_CLASSES  = 10,
     parameter int CLK_FREQ_HZ  = 100_000_000,
-    parameter int BAUD_RATE    = 115_200,
-    localparam int CLKS_PER_BIT = CLK_FREQ_HZ / BAUD_RATE
+    parameter int BAUD_RATE    = 115_200
 )(
     input  logic clk,
     input  logic reset,
@@ -34,6 +34,21 @@ module top_level #(
     output logic uart_tx_o,
     output logic [3:0] predicted_digit   // final CNN prediction (0–9)
 );
+
+    localparam int CLKS_PER_BIT = CLK_FREQ_HZ / BAUD_RATE;
+
+    // ---- File path helpers (simulation vs synthesis)
+    `ifdef SYNTHESIS
+    localparam string CONV_W_FILE = "conv1_weights.mem";
+    localparam string CONV_B_FILE = "conv1_biases.mem";
+    localparam string FC_W_FILE   = "fc1_weights.mem";
+    localparam string FC_B_FILE   = "fc1_biases.mem";
+    `else
+    localparam string CONV_W_FILE = "weights/conv1_weights.mem";
+    localparam string CONV_B_FILE = "weights/conv1_biases.mem";
+    localparam string FC_W_FILE   = "weights/fc1_weights.mem";
+    localparam string FC_B_FILE   = "weights/fc1_biases.mem";
+    `endif
 
     // ---------------- Flattened geometry helpers ----------------
     localparam int IF_SZ   = IN_CHANNELS  * IMG_SIZE * IMG_SIZE;
@@ -44,11 +59,10 @@ module top_level #(
 
     // ---------------- Flattened feature buffers ----------------
     logic signed [DATA_WIDTH-1:0] ifmap_flat [0:IF_SZ-1];
-    logic signed [DATA_WIDTH-1:0] conv_out_flat [0:OF_SZ-1];
-    logic signed [DATA_WIDTH-1:0] relu_out_flat [0:OF_SZ-1];
-    logic signed [DATA_WIDTH-1:0] pool_out_flat [0:PO_SZ-1];
-    logic signed [DATA_WIDTH-1:0] flat_vec      [0:FLAT-1];
-    logic signed [DATA_WIDTH-1:0] logits        [0:NUM_CLASSES-1];
+    wire signed [DATA_WIDTH-1:0] conv_out_flat [0:OF_SZ-1];
+    wire signed [DATA_WIDTH-1:0] relu_out_flat [0:OF_SZ-1];
+    wire signed [DATA_WIDTH-1:0] pool_out_flat [0:PO_SZ-1];
+    wire signed [DATA_WIDTH-1:0] logits        [0:NUM_CLASSES-1];
 
     // ---------------- UART RX (load pixels) ----------------
     logic       rx_dv;
@@ -91,8 +105,8 @@ module top_level #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
         .IN_CHANNELS(IN_CHANNELS), .OUT_CHANNELS(OUT_CHANNELS),
         .KERNEL(3), .IMG_SIZE(IMG_SIZE),
-        .WEIGHTS_FILE("weights/conv1_weights.mem"),  // remove directory in vivado
-        .BIASES_FILE ("weights/conv1_biases.mem")    // remove directory in vivado
+        .WEIGHTS_FILE(CONV_W_FILE),  // remove directory in vivado
+        .BIASES_FILE (CONV_B_FILE)    // remove directory in vivado
     ) u_conv (
         .clk, .reset, .start(conv_start),
         .input_feature_flat(ifmap_flat),
@@ -122,37 +136,23 @@ module top_level #(
         .done(pool_done)
     );
 
-    // Flatten stage: simple linear copy to preserve pipeline / FSM timing
-    logic flattening, flat_done;
-    integer fi_idx;
+    // Make flat_done a 1-cycle delayed pulse of pool_done so FLAT sees it
+    logic flat_done_q;
     always_ff @(posedge clk) begin
-        if (reset) begin
-            flattening <= 1'b0; flat_done <= 1'b0; fi_idx <= 0;
-        end else begin
-            flat_done <= 1'b0;
-            if (pool_done && !flattening) begin
-                flattening <= 1'b1;
-                fi_idx <= 0;
-            end
-            if (flattening) begin
-                flat_vec[fi_idx] <= pool_out_flat[fi_idx];
-                if (fi_idx == FLAT-1) begin
-                    flattening <= 1'b0;
-                    flat_done  <= 1'b1;
-                end else fi_idx <= fi_idx + 1;
-            end
-        end
+        if (reset) flat_done_q <= 1'b0;
+        else       flat_done_q <= pool_done;
     end
+    wire flat_done = flat_done_q;
 
     // Dense (loads weights/biases internally)
     dense #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
         .IN_DIM(FLAT), .OUT_DIM(NUM_CLASSES),
-        .WEIGHTS_FILE("weights/fc1_weights.mem"), // remove directory in vivado
-        .BIASES_FILE ("weights/fc1_biases.mem")  // remove directory in vivado
+        .WEIGHTS_FILE(FC_W_FILE),
+        .BIASES_FILE (FC_B_FILE)  
     ) u_dense (
         .clk, .reset, .start(dense_start),
-        .in_vec(flat_vec),
+        .in_vec(pool_out_flat),
         .out_vec(logits), .done(dense_done)
     );
 
@@ -190,16 +190,15 @@ module top_level #(
         .busy(pipeline_busy)
     );
 
+`ifndef SYNTHESIS
     // ---------------- Performance (sim only) ----------------
     logic [63:0] cycle_ctr;
     logic [63:0] t_start, t_conv, t_relu, t_pool, t_flat, t_dense, t_argmax, t_tx;
-
+    logic        tx_start_q;
     always_ff @(posedge clk) begin
         if (reset) cycle_ctr <= 64'd0;
         else       cycle_ctr <= cycle_ctr + 64'd1;
     end
-
-    logic tx_start_q;
     always_ff @(posedge clk) begin
         if (reset) begin
             t_start<=0; t_conv<=0; t_relu<=0; t_pool<=0;
@@ -228,4 +227,6 @@ module top_level #(
             end
         end
     end
+`endif
+
 endmodule
