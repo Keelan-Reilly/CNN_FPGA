@@ -8,15 +8,14 @@ HDL_SRCS        := $(wildcard hdl/*.sv)
 TB_FULL         := tb/tb_full_pipeline.cpp
 
 # Verilator flags
-VERILATOR_FLAGS := -Wall -Wno-fatal --trace
+VERILATOR_FLAGS := -sv -Wall -Wno-fatal --trace \
+                   -CFLAGS -std=c++17
 
 # -------- Phony targets --------
 .PHONY: all build run clean realclean help
 
-# Default target: build + run full pipeline
 all: run
 
-# -------- Full pipeline (top_level) --------
 build: $(BUILD_DIR)/V$(TOP)
 
 $(BUILD_DIR)/V$(TOP): $(HDL_SRCS) $(TB_FULL)
@@ -28,7 +27,6 @@ $(BUILD_DIR)/V$(TOP): $(HDL_SRCS) $(TB_FULL)
 run: build
 	$(BUILD_DIR)/V$(TOP)
 
-# -------- Utilities --------
 clean:
 	rm -rf $(BUILD_DIR) *.vcd
 

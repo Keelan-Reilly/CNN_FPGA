@@ -1,103 +1,164 @@
 //======================================================================
-// dense.sv — Fully-connected (dense) layer for FPGA CNN accelerator
-//----------------------------------------------------------------------
-// What this module does:
-//   • Takes a flat input vector of length IN_DIM and computes OUT_DIM outputs.
-//   • Each output is: dot_product(in_vec, weights[o][:]) + bias[o].
-//   • Uses fixed-point maths; results are scaled back and clipped to the
-//     DATA_WIDTH range.
-//   • You pulse `start` to run one full pass; `done` pulses when all
-//     OUT_DIM outputs have been written.
-//
-// How it runs internally:
-//   • A small FSM outputs one by one.
-//   • For each output index `o`, it accumulates in_vec[i] * weights[o][i]
-//     over all i, starting from the bias.
-//   • After the last multiply-add for that output, it scales, saturates,
-//     writes out_vec[o], then moves to the next output (or finishes).
+// dense.sv — Fully-connected layer (input from BRAM), lint-clean
 //======================================================================
 (* keep_hierarchy = "yes" *)
 module dense #(
-    parameter int DATA_WIDTH = 16,
-    parameter int FRAC_BITS  = 7,
-    parameter int IN_DIM     = 1568,
-    parameter int OUT_DIM    = 10,
-    parameter string WEIGHTS_FILE = "fc1_weights.mem",
-    parameter string BIASES_FILE  = "fc1_biases.mem"
+  parameter int DATA_WIDTH = 16,
+  parameter int FRAC_BITS  = 7,
+  parameter int IN_DIM     = 1568,
+  parameter int OUT_DIM    = 10,
+  parameter int POST_SHIFT = 4, // try 1..3;
+  parameter string WEIGHTS_FILE = "fc1_weights.mem",
+  parameter string BIASES_FILE  = "fc1_biases.mem"
 )(
-    input  logic clk,
-    input  logic reset,
-    input  logic start,
+  input  logic clk,
+  input  logic reset,
+  input  logic start,
 
-    input  logic signed [DATA_WIDTH-1:0] in_vec  [0:IN_DIM-1],
-    output logic signed [DATA_WIDTH-1:0] out_vec [0:OUT_DIM-1],
+  // Input vector BRAM (read)
+  output logic [$clog2(IN_DIM)-1:0]            in_addr,
+  output logic                                 in_en,
+  input  logic  signed [DATA_WIDTH-1:0]        in_q,
 
-    output logic done
+  // Output logits
+  output logic signed [DATA_WIDTH-1:0] out_vec [0:OUT_DIM-1],
+
+  output logic done
 );
-    localparam int ACCW = DATA_WIDTH*2 + $clog2(IN_DIM);
-    typedef enum logic [1:0] {IDLE, ACCUM, WRITE, FINISH} state_t;
-    state_t state;
 
-    integer o, i;
-    logic signed [ACCW-1:0]         acc;
-    (* use_dsp = "yes" *) logic signed [2*DATA_WIDTH-1:0] prod;
+  localparam int ACCW = DATA_WIDTH*2 + $clog2(IN_DIM);
+  typedef enum logic [2:0] {IDLE, READ, MAC, WRITE, FINISH} state_t;  // <- 3 bits
+  state_t state;
 
-    localparam logic signed [DATA_WIDTH-1:0] S_MAX = (1 <<< (DATA_WIDTH-1)) - 1;
-    localparam logic signed [DATA_WIDTH-1:0] S_MIN = - (1 <<< (DATA_WIDTH-1));
+  integer o, i;
+  logic signed [ACCW-1:0]         acc;
+  (* use_dsp = "yes" *) logic signed [2*DATA_WIDTH-1:0] prod;
 
-    function automatic int w_idx(input int oo, input int ii);
-        return oo*IN_DIM + ii;
-    endfunction
+  localparam logic signed [DATA_WIDTH-1:0] S_MAX = (1 <<< (DATA_WIDTH-1)) - 1;
+  localparam logic signed [DATA_WIDTH-1:0] S_MIN = - (1 <<< (DATA_WIDTH-1));
+  localparam logic signed [ACCW-1:0] S_MAXX = {{(ACCW-DATA_WIDTH){S_MAX[DATA_WIDTH-1]}}, S_MAX};
+  localparam logic signed [ACCW-1:0] S_MINX = {{(ACCW-DATA_WIDTH){S_MIN[DATA_WIDTH-1]}}, S_MIN};
 
-    localparam int W_DEPTH = OUT_DIM*IN_DIM;
-    (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] W [0:W_DEPTH-1];
-    (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] B [0:OUT_DIM-1];
 
-    initial begin
-        $readmemh(WEIGHTS_FILE, W);
-        $readmemh(BIASES_FILE,  B);
+  function automatic int w_idx(input int oo, input int ii);
+    return oo*IN_DIM + ii;
+  endfunction
+
+  localparam int W_DEPTH = OUT_DIM*IN_DIM;
+  localparam int AW = (W_DEPTH<=1)?1:$clog2(W_DEPTH);
+
+  localparam int IN_AW = (IN_DIM<=1)?1:$clog2(IN_DIM);
+  typedef logic [IN_AW-1:0] in_addr_t;
+  typedef logic [AW-1:0]    w_addr_t;
+
+  // Weight/Bias ROMs (sync read for W)
+  (* rom_style="block", ram_style="block" *)
+  logic signed [DATA_WIDTH-1:0] W [0:W_DEPTH-1];
+  (* rom_style="block", ram_style="block" *)
+  logic signed [DATA_WIDTH-1:0] B [0:OUT_DIM-1];
+
+  logic [AW-1:0]                 w_addr;
+  logic signed [DATA_WIDTH-1:0]  w_q;
+  always_ff @(posedge clk) begin
+    w_q <= W[w_addr];
+  end
+
+  integer fdw, fdb;
+  initial begin
+  `ifndef SYNTHESIS
+    integer i; integer sumW; integer sumB;
+
+    fdw = $fopen(WEIGHTS_FILE, "r");
+    if (fdw == 0) $fatal(1, "%m: cannot open weights file '%s'", WEIGHTS_FILE);
+    else $fclose(fdw);
+    fdb = $fopen(BIASES_FILE, "r");
+    if (fdb == 0) $fatal(1, "%m: cannot open biases file '%s'", BIASES_FILE);
+    else $fclose(fdb);
+  `endif
+
+    $readmemh(WEIGHTS_FILE, W);
+    $readmemh(BIASES_FILE,  B);
+
+  `ifndef SYNTHESIS
+  // Tiny checksum to verify non-zero data
+  sumW = 0; sumB = 0;
+  for (i = 0; i < $size(W); i++) sumW = sumW + W[i];
+  for (i = 0; i < $size(B); i++) sumB = sumB + B[i];
+  $display("%m: loaded %0d weights, %0d biases; sums: W=%0d B=%0d",
+           $size(W), $size(B), sumW, sumB);
+  `endif
+  end
+
+  function automatic logic signed [ACCW-1:0] bias_ext(input logic signed [DATA_WIDTH-1:0] b);
+    return $signed({{(ACCW-DATA_WIDTH){b[DATA_WIDTH-1]}}, b}) <<< FRAC_BITS;
+  endfunction
+
+  always_ff @(posedge clk) begin
+    if (reset) begin
+      state <= IDLE; done <= 1'b0;
+      o <= 0; i <= 0; acc <= '0; prod <= '0; w_addr <= '0;
+      in_en <= 1'b0; in_addr <= '0;
+    end else begin
+      done  <= 1'b0;
+      in_en <= 1'b0;                 // default LOW; we'll raise it in READ
+
+      unique case (state)
+        // Prime addresses only; don't assert in_en here
+        IDLE: if (start) begin
+                 o <= 0; i <= 0;
+                 acc     <= bias_ext(B[0]);
+                 in_addr <= in_addr_t'(0);
+                 w_addr  <= w_addr_t'(w_idx(0,0));
+                 state   <= READ;
+               end
+
+        // Assert in_en so BRAM outputs in_q for the address set previously
+        READ: begin
+                 in_en <= 1'b1;      // <-- important: enable happens in READ
+                 state <= MAC;
+               end
+
+        // Consume in_q & w_q this cycle; queue up next addresses
+        MAC:  begin
+                 automatic logic signed [2*DATA_WIDTH-1:0] p;
+                 p    = in_q * w_q;
+                 acc  <= acc + {{(ACCW-2*DATA_WIDTH){p[2*DATA_WIDTH-1]}}, p};
+
+                 if (i == IN_DIM-1) begin
+                   state <= WRITE;
+                 end else begin
+                   i       <= i + 1;
+                   in_addr <= in_addr_t'(i + 1);      // request next input
+                   w_addr  <= w_addr_t'(w_idx(o, i+1)); // request next weight
+                   state   <= READ;                   // in_en will be asserted next cycle
+                 end
+               end
+
+        WRITE: begin
+                 logic signed [ACCW-1:0]       shifted;
+                 logic signed [DATA_WIDTH-1:0] res;
+                 shifted = acc >>> (FRAC_BITS + POST_SHIFT);
+                 if      (shifted > S_MAXX) res <= S_MAX;
+                 else if (shifted < S_MINX) res <= S_MIN;
+                 else                        res <= shifted[DATA_WIDTH-1:0];
+                 out_vec[o] <= res;
+
+                 if (o == OUT_DIM-1) begin
+                   state <= FINISH;
+                 end else begin
+                   o <= o + 1; i <= 0;
+                   acc     <= bias_ext(B[o+1]);
+                   in_addr <= in_addr_t'(0);
+                   w_addr  <= w_addr_t'(w_idx(o+1, 0));
+                   state   <= READ;    // next cycle we'll assert in_en
+                 end
+               end
+
+        FINISH: begin
+                 done  <= 1'b1;
+                 state <= IDLE;
+               end
+      endcase
     end
-
-    always_ff @(posedge clk) begin
-        if (reset) begin
-            state <= IDLE; done <= 1'b0;
-            o <= 0; i <= 0; acc <= '0; prod <= '0;
-        end else begin
-            done <= 1'b0;
-            unique case (state)
-              IDLE: if (start) begin
-                        o <= 0; i <= 0;
-                        acc <= ({{(ACCW-DATA_WIDTH){B[0][DATA_WIDTH-1]}}, B[0]}) <<< FRAC_BITS;
-                        state <= ACCUM;
-                    end
-              ACCUM: begin
-                        prod = in_vec[i] * W[w_idx(o,i)];
-                        acc  = acc + prod;
-                        if (i == IN_DIM-1) state <= WRITE;
-                        else               i <= i + 1;
-                     end
-              WRITE: begin
-                        logic signed [ACCW-1:0]       shifted;
-                        logic signed [DATA_WIDTH-1:0] res;
-                        shifted = acc >>> FRAC_BITS;
-                        if (shifted > S_MAX)      res <= S_MAX;
-                        else if (shifted < S_MIN) res <= S_MIN;
-                        else                      res <= shifted[DATA_WIDTH-1:0];
-                        out_vec[o] <= res;
-
-                        if (o == OUT_DIM-1) begin
-                            state <= FINISH;
-                        end else begin
-                            o <= o + 1; i <= 0;
-                            acc <= ({{(ACCW-DATA_WIDTH){B[o+1][DATA_WIDTH-1]}}, B[o+1]}) <<< FRAC_BITS;
-                            state <= ACCUM;
-                        end
-                     end
-              FINISH: begin
-                        done <= 1'b1;
-                        state <= IDLE;
-                     end
-            endcase
-        end
-    end
+  end
 endmodule
