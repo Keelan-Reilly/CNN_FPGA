@@ -13,7 +13,7 @@
 //   • For each 2×2 block, the maximum value is chosen.
 //   • FSM steps through all channels, rows, and columns systematically.
 //======================================================================
-
+(* keep_hierarchy = "yes" *)
 module maxpool #(
     parameter int DATA_WIDTH = 16,
     parameter int CHANNELS   = 8,

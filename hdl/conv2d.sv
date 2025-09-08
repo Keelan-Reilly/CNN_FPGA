@@ -16,7 +16,7 @@
 //     writes the pixel, and moves to the next location.
 //   • Zero-padding is used at the image edges so the output size matches the input.
 //======================================================================
-
+(* keep_hierarchy = "yes" *)
 module conv2d #(
     parameter int DATA_WIDTH   = 16,
     parameter int FRAC_BITS    = 7,
@@ -53,7 +53,7 @@ module conv2d #(
     integer ic, kr, kc;
 
     logic signed [ACCW-1:0]         acc;
-    logic signed [2*DATA_WIDTH-1:0] prod;
+    (* use_dsp = "yes" *) logic signed [2*DATA_WIDTH-1:0] prod;
 
     // Saturation bounds
     localparam logic signed [DATA_WIDTH-1:0] S_MAX = (1 <<< (DATA_WIDTH-1)) - 1;
@@ -69,8 +69,8 @@ module conv2d #(
 
     // ---------------- Internal ROMs for weights/biases ----------------
     localparam int W_DEPTH = OUT_CHANNELS*IN_CHANNELS*KERNEL*KERNEL;
-    (* ram_style = "block" *) logic signed [DATA_WIDTH-1:0] W_rom [0:W_DEPTH-1];
-    (* ram_style = "block" *) logic signed [DATA_WIDTH-1:0] B_rom [0:OUT_CHANNELS-1];
+    (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] W_rom [0:W_DEPTH-1];
+    (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] B_rom [0:OUT_CHANNELS-1];
 
     initial begin
         $readmemh(WEIGHTS_FILE, W_rom);
@@ -103,8 +103,8 @@ module conv2d #(
                     end
 
               MAC: begin
-                    int ir  = orow + kr - PAD;
-                    int icc = ocol + kc - PAD;
+                    automatic int ir  = orow + kr - PAD;
+                    automatic int icc = ocol + kc - PAD;
 
                     prod = in_at(ic, ir, icc) * W_rom[w_idx(oc, ic, kr, kc)];
                     acc  = acc + prod; // blocking add so WRITE sees full sum next

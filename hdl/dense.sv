@@ -16,7 +16,7 @@
 //   • After the last multiply-add for that output, it scales, saturates,
 //     writes out_vec[o], then moves to the next output (or finishes).
 //======================================================================
-
+(* keep_hierarchy = "yes" *)
 module dense #(
     parameter int DATA_WIDTH = 16,
     parameter int FRAC_BITS  = 7,
@@ -40,7 +40,7 @@ module dense #(
 
     integer o, i;
     logic signed [ACCW-1:0]         acc;
-    logic signed [2*DATA_WIDTH-1:0] prod;
+    (* use_dsp = "yes" *) logic signed [2*DATA_WIDTH-1:0] prod;
 
     localparam logic signed [DATA_WIDTH-1:0] S_MAX = (1 <<< (DATA_WIDTH-1)) - 1;
     localparam logic signed [DATA_WIDTH-1:0] S_MIN = - (1 <<< (DATA_WIDTH-1));
@@ -50,8 +50,8 @@ module dense #(
     endfunction
 
     localparam int W_DEPTH = OUT_DIM*IN_DIM;
-    (* ram_style = "block" *) logic signed [DATA_WIDTH-1:0] W [0:W_DEPTH-1];
-    (* ram_style = "block" *) logic signed [DATA_WIDTH-1:0] B [0:OUT_DIM-1];
+    (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] W [0:W_DEPTH-1];
+    (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] B [0:OUT_DIM-1];
 
     initial begin
         $readmemh(WEIGHTS_FILE, W);

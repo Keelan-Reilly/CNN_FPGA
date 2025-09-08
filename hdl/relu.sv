@@ -11,7 +11,7 @@
 //   • Output: same size as input; negative values set to zero.
 //   • FSM steps through channels, rows, and columns in sequence.
 //======================================================================
-
+(* keep_hierarchy = "yes" *)
 module relu #(
     parameter int DATA_WIDTH = 16,
     parameter int FRAC_BITS  = 7,
@@ -44,7 +44,8 @@ module relu #(
                 end
             end
             RUN: begin
-                logic signed [DATA_WIDTH-1:0] v = in_feature_flat[idx3(c,r,q)];
+                automatic logic signed [DATA_WIDTH-1:0] v;
+                v = in_feature_flat[idx3(c,r,q)];
                 out_feature_flat[idx3(c,r,q)] <= v[DATA_WIDTH-1] ? '0 : v;
 
                 if (q == W-1) begin

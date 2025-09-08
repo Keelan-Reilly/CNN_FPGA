@@ -20,6 +20,7 @@
 //   • FINISH : Output the best index, pulse `done`, and return to IDLE.
 //======================================================================
 
+(* keep_hierarchy = "yes" *)
 module argmax #(
     parameter int DATA_WIDTH = 16,
     parameter int DIM        = 10,
