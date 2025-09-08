@@ -34,6 +34,10 @@ module conv2d #(
     localparam int WIDTH  = IMG_SIZE;
     localparam int IF_SZ  = IN_CHANNELS*HEIGHT*WIDTH;
     localparam int OF_SZ  = OUT_CHANNELS*HEIGHT*WIDTH;
+    localparam int IF_AW = $clog2(IF_SZ);
+    localparam int OF_AW = $clog2(OF_SZ);
+    typedef logic [IF_AW-1:0] if_addr_t;
+    typedef logic [OF_AW-1:0] of_addr_t;
 
     // Accumulator headroom
     localparam int ACCW = DATA_WIDTH*2 + $clog2(KERNEL*KERNEL*IN_CHANNELS) + 2;
@@ -96,6 +100,7 @@ module conv2d #(
     // BRAM read pipeline helpers
     logic pix_valid_q;
     logic signed [DATA_WIDTH-1:0] weight_reg;
+    integer ir, icc;
 
     always_ff @(posedge clk) begin
         if (reset) begin
@@ -120,12 +125,12 @@ module conv2d #(
                     end
 
               READ: begin
-                    int ir  = orow + kr - PAD;
-                    int icc = ocol + kc - PAD;
+                    ir  = orow + kr - PAD;
+                    icc = ocol + kc - PAD;
 
                     pix_valid_q <= (ir>=0 && ir<HEIGHT && icc>=0 && icc<WIDTH);
                     if ((ir>=0) && (ir<HEIGHT) && (icc>=0) && (icc<WIDTH)) begin
-                        if_addr <= lin3(ic, ir, icc, HEIGHT, WIDTH)[$clog2(IF_SZ)-1:0];
+                        if_addr <= if_addr_t'( lin3(ic, ir, icc, HEIGHT, WIDTH) );
                         if_en   <= 1'b1;
                     end
                     weight_reg <= W_rom[((oc*IN_CHANNELS + ic)*KERNEL + kr)*KERNEL + kc];
@@ -134,9 +139,8 @@ module conv2d #(
 
               MAC: begin
                     // Use the pixel arriving from BRAM this cycle and the weight latched in READ
-                    automatic logic signed [2*DATA_WIDTH-1:0] p;
-                    p = (pix_valid_q ? if_q : '0) * weight_reg;
-                    acc <= acc + {{(ACCW-2*DATA_WIDTH){p[2*DATA_WIDTH-1]}}, p};
+                    prod = (pix_valid_q ? if_q : '0) * weight_reg; // blocking temp
+                    acc  <= acc + {{(ACCW-2*DATA_WIDTH){prod[2*DATA_WIDTH-1]}}, prod};
 
                     if (kc == KERNEL-1) begin
                         kc <= 0;
@@ -157,7 +161,7 @@ module conv2d #(
                     else if (shifted < S_MINX) res <= S_MIN;
                     else                       res <= shifted[DATA_WIDTH-1:0];
 
-                    conv_addr <= lin3(oc, orow, ocol, HEIGHT, WIDTH)[$clog2(OF_SZ)-1:0];
+                    conv_addr <= of_addr_t'( lin3(oc, orow, ocol, HEIGHT, WIDTH) );
                     conv_d    <= res;
                     conv_en   <= 1'b1;
                     conv_we   <= 1'b1;

@@ -23,6 +23,8 @@ module relu #(
     output logic done
 );
     localparam int H = IMG_SIZE, W = IMG_SIZE;
+    localparam int AW = $clog2(CHANNELS*IMG_SIZE*IMG_SIZE);
+    typedef logic [AW-1:0] addr_t;
 
     typedef enum logic [1:0] {IDLE, READ, WRITE, FINISH} st_t;
     st_t st;
@@ -45,7 +47,7 @@ module relu #(
         unique case(st)
           IDLE: if (start) begin
                   ch<=0; r<=0; c<=0;
-                  conv_r_addr <= lin3(0,0,0)[$clog2(CHANNELS*IMG_SIZE*IMG_SIZE)-1:0];
+                  conv_r_addr <= addr_t'( lin3(0,0,0) );
                   conv_r_en   <= 1'b1;
                   st <= READ;
                 end
@@ -67,17 +69,17 @@ module relu #(
                       if (ch==CHANNELS-1) st<=FINISH;
                       else begin
                         ch<=ch+1;
-                        conv_r_addr <= lin3(ch+1,0,0)[$clog2(CHANNELS*IMG_SIZE*IMG_SIZE)-1:0];
+                        conv_r_addr <= addr_t'( lin3(ch+1,0,0) );
                         conv_r_en<=1'b1; st<=READ;
                       end
                     end else begin
                       r<=r+1;
-                      conv_r_addr <= lin3(ch,r+1,0)[$clog2(CHANNELS*IMG_SIZE*IMG_SIZE)-1:0];
+                      conv_r_addr <= addr_t'( lin3(ch, r+1, 0) );
                       conv_r_en<=1'b1; st<=READ;
                     end
                   end else begin
                     c<=c+1;
-                    conv_r_addr <= lin3(ch,r,c+1)[$clog2(CHANNELS*IMG_SIZE*IMG_SIZE)-1:0];
+                    conv_r_addr <= addr_t'( lin3(ch, r,   c+1) );
                     conv_r_en<=1'b1; st<=READ;
                   end
                 end
