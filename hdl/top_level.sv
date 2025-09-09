@@ -9,7 +9,7 @@ module top_level #(
     parameter int IN_CHANNELS  = 1,
     parameter int OUT_CHANNELS = 8,
     parameter int NUM_CLASSES  = 10,
-    parameter int CLK_FREQ_HZ  = 100_000_000,
+    parameter int CLK_FREQ_HZ  = 50_000_000,
     parameter int BAUD_RATE    = 115_200
 )(
     input  logic clk,
@@ -54,9 +54,10 @@ module top_level #(
     // ---- 8-bit -> Q7 LUT: scales [0..255] -> Q7 fixed-point ----
     logic signed [DATA_WIDTH-1:0] pix_q7_lut [0:255];
     initial begin : init_pix_q7
-        integer k;
+        integer k; 
+        integer v;
         for (k = 0; k < 256; k++) begin
-            int v = (k * (1 << FRAC_BITS) + 127) / 255;  // rounded
+            v = (k * (1 << FRAC_BITS) + 127) / 255;  // rounded
             pix_q7_lut[k] = $signed(v[DATA_WIDTH-1:0]);
         end
     end

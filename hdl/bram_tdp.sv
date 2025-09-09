@@ -20,14 +20,19 @@ module bram_tdp #(
 );
   (* ram_style="block" *) logic signed [DW-1:0] mem [0:DEPTH-1];
 
+  // Port A process
   always_ff @(posedge clk) begin
     if (a_en) begin
       if (a_we) mem[a_addr] <= a_din;
-      a_dout <= mem[a_addr];
+      a_dout <= mem[a_addr];   // 1-cycle latency
     end
+  end
+
+  // Port B process
+  always_ff @(posedge clk) begin
     if (b_en) begin
       if (b_we) mem[b_addr] <= b_din;
-      b_dout <= mem[b_addr];
+      b_dout <= mem[b_addr];   // 1-cycle latency
     end
   end
 endmodule

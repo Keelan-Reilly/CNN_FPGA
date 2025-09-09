@@ -27,7 +27,7 @@
 //======================================================================
 module uart_rx #(
 
-    parameter int CLK_FREQ = 100_000_000,  // in Hz
+    parameter int CLK_FREQ = 50_000_000,  // in Hz
     parameter int BAUD     = 115200,
     parameter CLKS_PER_BIT = CLK_FREQ / BAUD
 )(
@@ -91,7 +91,7 @@ endmodule
 //   • tx_dv must be a one-cycle pulse with valid tx_byte.
 //======================================================================
 module uart_tx #(
-    parameter int CLK_FREQ = 100_000_000,  // in Hz
+    parameter int CLK_FREQ = 50_000_000,  // in Hz
     parameter int BAUD     = 115200,
     parameter CLKS_PER_BIT = CLK_FREQ / BAUD
 )(
