@@ -322,7 +322,7 @@ module top_level #(
         end
         if (dense_in_en) begin
         // issue current address (CHW)
-        poolB_addr_r <= ch_off + row_off + hwc_col;
+        poolB_addr_r <= ch_off + row_off + PO_AW'(hwc_col);
 
         // advance HWC counters for next request
         if (hwc_ch == C-1) begin
@@ -332,14 +332,15 @@ module top_level #(
             if (hwc_row == OS-1) begin
                 hwc_row <= 0; row_off <= 0;
             end else begin
-                hwc_row <= hwc_row + 1; row_off <= row_off + OS;
+                hwc_row <= hwc_row + 1; 
+                row_off <= row_off + PO_AW'(OS);
             end
             end else begin
             hwc_col <= hwc_col + 1;
             end
         end else begin
             hwc_ch  <= hwc_ch + 1;
-            ch_off  <= ch_off + CH_STRIDE_PO;
+            ch_off  <= ch_off + PO_AW'(CH_STRIDE_PO);
         end
         end
     end

@@ -64,7 +64,7 @@ module maxpool #(
                       ch<=0; r<=0; q<=0;
                       pool_base <= 0;
                       conv_base <= 0;
-                      conv_addr <= conv_base;
+                      conv_addr <= 0;
                       conv_en   <= 1'b1;
                       state <= READ0;
                     end

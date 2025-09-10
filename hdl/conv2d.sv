@@ -42,7 +42,7 @@ module conv2d #(
     // Accumulator headroom
     localparam int ACCW = DATA_WIDTH*2 + $clog2(KERNEL*KERNEL*IN_CHANNELS) + 2;
 
-    typedef enum logic [2:0] {IDLE, READ, MAC, WRITE, FINISH} state_t;
+    typedef enum logic [2:0] {IDLE, READ, PROD, ACCUM, WRITE, FINISH} state_t;
     state_t state;
 
     integer oc, orow, ocol;
@@ -106,6 +106,8 @@ module conv2d #(
 
     // BRAM read pipeline helpers
     logic pix_valid_q;
+    logic pix_valid_d;
+    logic signed [2*DATA_WIDTH-1:0] prod_reg;
     logic signed [DATA_WIDTH-1:0] weight_reg;
     integer ir, icc;
 
@@ -116,7 +118,9 @@ module conv2d #(
             ic<=0; kr<=0; kc<=0;
             acc <= '0;
             if_en <= 1'b0; conv_en <= 1'b0; conv_we <= 1'b0;
-            pix_valid_q <= 1'b0;
+            pix_valid_q <= 1'b0; 
+            pix_valid_d <= 1'b0;
+            prod_reg <= '0;
             w_addr <= '0; w_base_oc <= '0;
         end else begin
             done   <= 1'b0;
@@ -144,32 +148,39 @@ module conv2d #(
                         if_en   <= 1'b1;
                     end
                     weight_reg <= W_rom[w_addr]; // latch weight for MAC
-                    state <= MAC;
+                    state <= PROD;
                   end
 
-              MAC: begin
-                    // Use the pixel arriving from BRAM this cycle and the weight latched in READ
-                    acc <= acc + ( pix_valid_q ? ($signed(if_q) * $signed(weight_reg)) : '0 );
+              PROD: begin
+                    pix_valid_d <= pix_valid_q;
+                    prod_reg    <= (pix_valid_q ? if_q : '0) * weight_reg;
+                    state       <= ACCUM;
+                end
+
+              ACCUM: begin
+                    acc <= acc + {{(ACCW-2*DATA_WIDTH){prod_reg[2*DATA_WIDTH-1]}}, prod_reg};
 
                     if (kc == KERNEL-1) begin
                         kc <= 0;
                         if (kr == KERNEL-1) begin
-                            kr <= 0;
-                            if (ic == IN_CHANNELS-1) state <= WRITE;
-                            else begin 
-                                ic <= ic + 1; 
-                                w_addr <= w_addr + w_addr_t'(1); // next ic weight
-                                state <= READ; end
-                        end else begin 
-                            kr <= kr + 1; 
-                            w_addr <= w_addr + w_addr_t'(1); // next kr weight
-                            state <= READ; 
+                        kr <= 0;
+                        if (ic == IN_CHANNELS-1) state <= WRITE;
+                        else begin
+                            ic <= ic + 1;
+                            w_addr <= w_addr + w_addr_t'(1);
+                            state <= READ;
                         end
-                    end else begin 
-                        kc <= kc + 1; 
-                        w_addr <= w_addr + w_addr_t'(1); // next kc weight
-                        state <= READ; end
-                  end
+                    end else begin
+                        kr <= kr + 1;
+                        w_addr <= w_addr + w_addr_t'(1);
+                        state <= READ;
+                        end
+                    end else begin
+                        kc <= kc + 1;
+                        w_addr <= w_addr + w_addr_t'(1);
+                        state <= READ;
+                    end
+                    end
 
               WRITE: begin
                     logic signed [ACCW-1:0]       shifted;
