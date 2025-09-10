@@ -71,16 +71,6 @@ module top_level #(
         return of_addr_t'(((ch*IMG_SIZE + row)*IMG_SIZE + col));
     endfunction
 
-        // Map a logical HWC (row, col, ch) linear index to the physical CHW BRAM index
-    function automatic [PO_AW-1:0] hwc_to_chw(input [PO_AW-1:0] a);
-        int pix, ch, row, col;
-        pix = a / OUT_CHANNELS;            // which (row,col) pixel
-        ch  = a % OUT_CHANNELS;            // channel within that pixel
-        row = pix / POOLED;
-        col = pix % POOLED;
-        return PO_AW'(((ch*POOLED + row)*POOLED) + col); // CHW address
-    endfunction
-
     // Frame loader
     integer r, c;
     logic frame_loaded;
@@ -305,8 +295,55 @@ module top_level #(
                         (relu_active) ? relu_w_d    : '0;
 
     // POOL BRAM Port B (dense reader)
-    assign poolB_en   = dense_in_en;
-    assign poolB_addr = hwc_to_chw(dense_in_addr);
+    assign poolB_en = dense_in_en;
+
+    localparam int OS = POOLED;
+    localparam int C  = OUT_CHANNELS;
+    localparam int CH_STRIDE_PO = OS*OS;
+
+    logic [PO_AW-1:0] poolB_addr_r;
+    assign poolB_addr = poolB_addr_r;
+
+    logic [$clog2(C)-1:0]   hwc_ch;
+    logic [$clog2(OS)-1:0]  hwc_row, hwc_col;
+    logic [PO_AW-1:0]       ch_off, row_off;
+
+    always_ff @(posedge clk) begin
+    if (reset) begin
+        hwc_ch<=0; hwc_row<=0; hwc_col<=0;
+        ch_off<=0; row_off<=0;
+        poolB_addr_r<=0;
+    end else begin
+        // If dense just started, reset the sequencer
+        if (dense_start) begin
+        hwc_ch<=0; hwc_row<=0; hwc_col<=0;
+        ch_off<=0; row_off<=0;
+        poolB_addr_r<=0;
+        end
+        if (dense_in_en) begin
+        // issue current address (CHW)
+        poolB_addr_r <= ch_off + row_off + hwc_col;
+
+        // advance HWC counters for next request
+        if (hwc_ch == C-1) begin
+            hwc_ch <= 0; ch_off <= 0;
+            if (hwc_col == OS-1) begin
+            hwc_col <= 0;
+            if (hwc_row == OS-1) begin
+                hwc_row <= 0; row_off <= 0;
+            end else begin
+                hwc_row <= hwc_row + 1; row_off <= row_off + OS;
+            end
+            end else begin
+            hwc_col <= hwc_col + 1;
+            end
+        end else begin
+            hwc_ch  <= hwc_ch + 1;
+            ch_off  <= ch_off + CH_STRIDE_PO;
+        end
+        end
+    end
+    end
 
 `ifndef SYNTHESIS
     // ---------------- Performance (sim only) ----------------

@@ -36,6 +36,9 @@ module maxpool #(
 
     logic signed [DATA_WIDTH-1:0] a0,a1,a2,a3;
 
+    conv_addr_t conv_base;           // top-left of current 2x2 window in CONV buffer
+    pool_addr_t pool_base;           // linear index in POOL buffer (CHW order)
+
     function automatic int lin3(
         input int ch_i, input int row_i, input int col_i,
         input int H_i,  input int W_i
@@ -50,34 +53,38 @@ module maxpool #(
             state<=IDLE; done<=0; ch<=0; r<=0; q<=0;
             conv_en<=0; pool_en<=0; pool_we<=0;
             a0<='0; a1<='0; a2<='0; a3<='0;
+            conv_base <= '0; 
+            pool_base <= '0; 
+            conv_addr <= '0;
         end else begin
             done<=0; conv_en<=0; pool_en<=0; pool_we<=0;
 
             unique case(state)
               IDLE: if (start) begin
                       ch<=0; r<=0; q<=0;
-                      conv_addr <= conv_addr_t'( lin3(0, 0, 0, IN_SIZE, IN_SIZE) );
+                      conv_base <= 0;
+                      conv_addr <= conv_base;
                       conv_en   <= 1'b1;
                       state <= READ0;
                     end
 
               READ0: begin
                       a0 <= conv_q;
-                      conv_addr <= conv_addr_t'( lin3(ch, 2*r,   2*q+1, IN_SIZE, IN_SIZE) );
+                      conv_addr <= conv_base + 1;
                       conv_en   <= 1'b1;
                       state <= READ1;
                     end
 
               READ1: begin
                       a1 <= conv_q;
-                      conv_addr <= conv_addr_t'( lin3(ch, 2*r+1, 2*q,   IN_SIZE, IN_SIZE) );
+                      conv_addr <= conv_base + IN_SIZE;
                       conv_en   <= 1'b1;
                       state <= READ2;
                     end
 
               READ2: begin
                       a2 <= conv_q;
-                      conv_addr <= conv_addr_t'( lin3(ch, 2*r+1, 2*q+1, IN_SIZE, IN_SIZE) );
+                      conv_addr <= conv_base + IN_SIZE + 1;
                       conv_en   <= 1'b1;
                       state <= READ3;
                     end
@@ -88,9 +95,11 @@ module maxpool #(
                     end
 
               WRITE: begin
-                      pool_addr <= pool_addr_t'( lin3(ch, r, q, OUT_SIZE, OUT_SIZE) );
-                      pool_d    <= max2(max2(a0,a1), max2(a2,a3));
+                      pool_addr <= pool_base;
+                      pool_d    <= (a0>a1 ? a0:a1) > (a2>a3 ? a2:a3)
+                                   ? (a0>a1 ? a0:a1) : (a2>a3 ? a2:a3); // max of 4                                   
                       pool_en   <= 1'b1; pool_we <= 1'b1;
+                      pool_base <= pool_base + 1; // next POOL address
 
                       if (q==OUT_SIZE-1) begin
                         q<=0;
@@ -100,19 +109,22 @@ module maxpool #(
                             state<=FINISH;
                           end else begin
                             ch<=ch+1;
-                            conv_addr <= conv_addr_t'( lin3(ch+1, 0,       0,       IN_SIZE, IN_SIZE) );
+                            conv_base <= conv_base + (IN_SIZE + 2); // next CH conv base
+                            conv_addr <= conv_base + (IN_SIZE + 2); // next CH conv addr
                             conv_en   <= 1'b1;
                             state<=READ0;
                           end
                         end else begin
                           r<=r+1;
-                          conv_addr <= conv_addr_t'( lin3(ch,   2*(r+1), 0,       IN_SIZE, IN_SIZE) );
+                          conv_base <= conv_base + (IN_SIZE + 2);
+                          conv_addr <= conv_base + (IN_SIZE + 2);
                           conv_en   <= 1'b1;
                           state<=READ0;
                         end
                       end else begin
                         q<=q+1;
-                        conv_addr <= conv_addr_t'( lin3(ch,   2*r,     2*(q+1), IN_SIZE, IN_SIZE) );
+                        conv_base <= conv_base + 2;
+                        conv_addr <= conv_base + 2;
                         conv_en   <= 1'b1;
                         state<=READ0;
                       end
