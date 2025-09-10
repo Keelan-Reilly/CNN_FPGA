@@ -1,5 +1,5 @@
 //======================================================================
-// conv2d.sv — 2-D convolution layer (BRAM streaming version, lint-clean)
+// conv2d.sv — 2-D convolution layer (BRAM streaming version, lint-clean) 
 //======================================================================
 (* keep_hierarchy = "yes" *)
 module conv2d #(
