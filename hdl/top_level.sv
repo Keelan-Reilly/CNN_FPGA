@@ -9,7 +9,7 @@ module top_level #(
     parameter int IN_CHANNELS  = 1,
     parameter int OUT_CHANNELS = 8,
     parameter int NUM_CLASSES  = 10,
-    parameter int CLK_FREQ_HZ  = 50_000_000,
+    parameter int CLK_FREQ_HZ  = 100_000_000,
     parameter int BAUD_RATE    = 115_200
 )(
     input  logic clk,

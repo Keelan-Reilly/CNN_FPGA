@@ -62,6 +62,14 @@ module conv2d #(
     (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] W_rom [0:W_DEPTH-1];
     (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] B_rom [0:OUT_CHANNELS-1];
 
+    // --- NEW: lightweight linear weight addressing (replaces big index expr) ---
+    localparam int            W_K2        = KERNEL*KERNEL;
+    localparam int            W_OC_STRIDE = IN_CHANNELS*W_K2;                 // weights per output channel
+    localparam int            W_AW        = (W_DEPTH<=1)?1:$clog2(W_DEPTH);
+    typedef logic [W_AW-1:0]  w_addr_t;
+    w_addr_t w_addr;       // current weight address within current oc
+    w_addr_t w_base_oc;    // base address for current oc
+
     integer fdw, fdb;
     initial begin
     `ifndef SYNTHESIS
@@ -110,6 +118,7 @@ module conv2d #(
             acc <= '0; prod <= '0;
             if_en <= 1'b0; conv_en <= 1'b0; conv_we <= 1'b0;
             pix_valid_q <= 1'b0;
+            w_addr <= '0; w_base_oc <= '0;
         end else begin
             done   <= 1'b0;
             if_en  <= 1'b0;
@@ -121,6 +130,8 @@ module conv2d #(
                         oc<=0; orow<=0; ocol<=0;
                         ic<=0; kr<=0; kc<=0;
                         acc <= bias_ext(B_rom[0]);
+                        w_base_oc <= w_addr_t'(0); 
+                        w_addr <= w_addr_t'(0);
                         state <= READ;
                     end
 
@@ -133,7 +144,7 @@ module conv2d #(
                         if_addr <= if_addr_t'( lin3(ic, ir, icc, HEIGHT, WIDTH) );
                         if_en   <= 1'b1;
                     end
-                    weight_reg <= W_rom[((oc*IN_CHANNELS + ic)*KERNEL + kr)*KERNEL + kc];
+                    weight_reg <= W_rom[w_addr]; // latch weight for MAC
                     state <= MAC;
                   end
 
@@ -147,9 +158,19 @@ module conv2d #(
                         if (kr == KERNEL-1) begin
                             kr <= 0;
                             if (ic == IN_CHANNELS-1) state <= WRITE;
-                            else begin ic <= ic + 1; state <= READ; end
-                        end else begin kr <= kr + 1; state <= READ; end
-                    end else begin kc <= kc + 1; state <= READ; end
+                            else begin 
+                                ic <= ic + 1; 
+                                w_addr <= w_addr + w_addr_t'(1); // next ic weight
+                                state <= READ; end
+                        end else begin 
+                            kr <= kr + 1; 
+                            w_addr <= w_addr + w_addr_t'(1); // next kr weight
+                            state <= READ; 
+                        end
+                    end else begin 
+                        kc <= kc + 1; 
+                        w_addr <= w_addr + w_addr_t'(1); // next kc weight
+                        state <= READ; end
                   end
 
               WRITE: begin
@@ -176,18 +197,24 @@ module conv2d #(
                                 oc  <= oc + 1;
                                 ic<=0; kr<=0; kc<=0;
                                 acc <= bias_ext(B_rom[oc+1]);
+                                // NEW: move to next oc's weight block
+                                w_base_oc <= w_base_oc + w_addr_t'(W_OC_STRIDE);
+                                w_addr    <= w_base_oc + w_addr_t'(W_OC_STRIDE);
                                 state <= READ;
+
                             end
                         end else begin
                             orow <= orow + 1;
                             ic<=0; kr<=0; kc<=0;
                             acc <= bias_ext(B_rom[oc]);
+                            w_addr <= w_base_oc; // reset to start of current oc weights
                             state <= READ;
                         end
                     end else begin
                         ocol <= ocol + 1;
                         ic<=0; kr<=0; kc<=0;
                         acc <= bias_ext(B_rom[oc]);
+                        w_addr <= w_base_oc; // reset to start of current oc weights
                         state <= READ;
                     end
                   end

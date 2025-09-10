@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
 
     // UART bit timing: matches DUT's CLKS_PER_BIT
     const int BAUD_RATE = 115200;
-    const int CLK_FREQ = 50000000; // 50 MHz
+    const int CLK_FREQ = 100000000; // 50 MHz
     const int CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
 
     // Send all 784 bytes over UART

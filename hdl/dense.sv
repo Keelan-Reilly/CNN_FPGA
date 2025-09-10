@@ -50,6 +50,7 @@ module dense #(
   localparam int IN_AW = (IN_DIM<=1)?1:$clog2(IN_DIM);
   typedef logic [IN_AW-1:0] in_addr_t;
   typedef logic [AW-1:0]    w_addr_t;
+  logic [AW-1:0] w_base;
 
   // Weight/Bias ROMs (sync read for W)
   (* rom_style="block", ram_style="block" *)
@@ -96,7 +97,7 @@ module dense #(
   always_ff @(posedge clk) begin
     if (reset) begin
       state <= IDLE; done <= 1'b0;
-      o <= 0; i <= 0; acc <= '0; prod <= '0; w_addr <= '0;
+      o <= 0; i <= 0; acc <= '0; prod <= '0; w_addr <= '0; w_base <= '0;
       in_en <= 1'b0; in_addr <= '0;
     end else begin
       done  <= 1'b0;
@@ -108,7 +109,8 @@ module dense #(
                  o <= 0; i <= 0;
                  acc     <= bias_ext(B[0]);
                  in_addr <= in_addr_t'(0);
-                 w_addr  <= w_addr_t'(w_idx(0,0));
+                 w_base  <= w_addr_t'(0);
+                 w_addr  <= w_addr_t'(0);
                  state   <= READ;
                end
 
@@ -129,7 +131,7 @@ module dense #(
                  end else begin
                    i       <= i + 1;
                    in_addr <= in_addr_t'(i + 1);      // request next input
-                   w_addr  <= w_addr_t'(w_idx(o, i+1)); // request next weight
+                   w_addr  <= w_base + w_addr_t'(i + 1); // request next weight
                    state   <= READ;                   // in_en will be asserted next cycle
                  end
                end
@@ -146,10 +148,13 @@ module dense #(
                  if (o == OUT_DIM-1) begin
                    state <= FINISH;
                  end else begin
-                   o <= o + 1; i <= 0;
+                   o <= o + 1; 
+                   i <= 0;
                    acc     <= bias_ext(B[o+1]);
                    in_addr <= in_addr_t'(0);
-                   w_addr  <= w_addr_t'(w_idx(o+1, 0));
+
+                   w_base  <= w_base + w_addr_t'(IN_DIM);
+                   w_addr  <= w_base + w_addr_t'(IN_DIM);
                    state   <= READ;    // next cycle we'll assert in_en
                  end
                end
