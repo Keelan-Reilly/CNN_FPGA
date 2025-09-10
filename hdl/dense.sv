@@ -123,8 +123,7 @@ module dense #(
         // Consume in_q & w_q this cycle; queue up next addresses
         MAC:  begin
                  automatic logic signed [2*DATA_WIDTH-1:0] p;
-                 p    = in_q * w_q;
-                 acc  <= acc + {{(ACCW-2*DATA_WIDTH){p[2*DATA_WIDTH-1]}}, p};
+                 acc <= acc + ($signed(in_q) * $signed(w_q));
 
                  if (i == IN_DIM-1) begin
                    state <= WRITE;

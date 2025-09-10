@@ -48,8 +48,7 @@ module conv2d #(
     integer oc, orow, ocol;
     integer ic, kr, kc;
 
-    logic signed [ACCW-1:0]         acc;
-    (* use_dsp = "yes" *) logic signed [2*DATA_WIDTH-1:0] prod;
+    (* use_dsp = "yes" *) logic signed [ACCW-1:0]         acc;
 
     // Sign-extended saturation bounds in ACC width
     localparam logic signed [DATA_WIDTH-1:0] S_MAX = (1 <<< (DATA_WIDTH-1)) - 1;
@@ -115,7 +114,7 @@ module conv2d #(
             state <= IDLE; done <= 1'b0;
             oc<=0; orow<=0; ocol<=0;
             ic<=0; kr<=0; kc<=0;
-            acc <= '0; prod <= '0;
+            acc <= '0;
             if_en <= 1'b0; conv_en <= 1'b0; conv_we <= 1'b0;
             pix_valid_q <= 1'b0;
             w_addr <= '0; w_base_oc <= '0;
@@ -150,8 +149,7 @@ module conv2d #(
 
               MAC: begin
                     // Use the pixel arriving from BRAM this cycle and the weight latched in READ
-                    prod = (pix_valid_q ? if_q : '0) * weight_reg; // blocking temp
-                    acc  <= acc + {{(ACCW-2*DATA_WIDTH){prod[2*DATA_WIDTH-1]}}, prod};
+                    acc <= acc + ( pix_valid_q ? ($signed(if_q) * $signed(weight_reg)) : '0 );
 
                     if (kc == KERNEL-1) begin
                         kc <= 0;

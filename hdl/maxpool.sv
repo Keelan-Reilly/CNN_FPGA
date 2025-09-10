@@ -62,6 +62,7 @@ module maxpool #(
             unique case(state)
               IDLE: if (start) begin
                       ch<=0; r<=0; q<=0;
+                      pool_base <= 0;
                       conv_base <= 0;
                       conv_addr <= conv_base;
                       conv_en   <= 1'b1;
