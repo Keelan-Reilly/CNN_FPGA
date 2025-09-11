@@ -219,7 +219,7 @@ module top_level #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
         .IN_DIM(PO_SZ), .OUT_DIM(NUM_CLASSES),
         .WEIGHTS_FILE(FC_W_FILE), .BIASES_FILE(FC_B_FILE),
-        .POST_SHIFT(4)
+        .POST_SHIFT(2)
     ) u_dense (
         .clk, .reset, .start(dense_start),
         .in_addr(dense_in_addr), .in_en(dense_in_en), .in_q(poolB_q),
@@ -237,9 +237,67 @@ module top_level #(
     // UART TX
     logic tx_ready = argmax_done;
     logic tx_busy, tx_dv; logic [7:0] tx_byte;
-    assign tx_dv = tx_start;
     localparam logic [7:0] ASCII_0 = 8'h30;
-    assign tx_byte = ASCII_0 + {4'b0000, predicted_digit};
+
+    // --- DEBUG: stream 10 logits (signed 16-bit) right after dense_done ---
+    localparam bit DEBUG_LOGITS = 1'b0;   // set to 0 to disable
+    logic        tx_dv_dbg;
+    logic [7:0]  tx_byte_dbg;
+    logic        dbg_active;
+    logic [3:0]  dbg_i;
+    logic [1:0]  dbg_byte_sel;
+    logic [15:0] dbg_word;
+
+    always_ff @(posedge clk) begin
+    if (reset) begin
+        dbg_active   <= 1'b0;
+        dbg_i        <= '0;
+        dbg_byte_sel <= '0;
+        tx_dv_dbg    <= 1'b0;
+        tx_byte_dbg  <= 8'h00;
+    end else begin
+        tx_dv_dbg <= 1'b0; // default LOW each cycle
+
+        // Kick off stream right after DENSE completes
+        if (DEBUG_LOGITS && dense_done) begin
+        dbg_active   <= 1'b1;
+        dbg_i        <= 0;
+        dbg_byte_sel <= 0;
+        tx_byte_dbg  <= 8'h4C;   // 'L' header
+        tx_dv_dbg    <= 1'b1;
+        end else
+        // When not busy, push next byte of the stream
+        if (dbg_active && !tx_busy) begin
+        if (tx_byte_dbg == 8'h4C) begin
+            // just sent header; send first logit high byte
+            tx_byte_dbg <= logits[0][15:8];
+            tx_dv_dbg   <= 1'b1;
+        end else begin
+            dbg_word    = logits[dbg_i];
+            tx_byte_dbg <= (dbg_byte_sel == 1'b0) ? dbg_word[15:8] : dbg_word[7:0];
+            tx_dv_dbg   <= 1'b1;
+
+            if (dbg_byte_sel == 1'b0) begin
+            dbg_byte_sel <= 1'b1;               // next time send low byte
+            end else begin
+            dbg_byte_sel <= 1'b0;               // finished one word
+            if (dbg_i == NUM_CLASSES-1) begin
+                tx_byte_dbg <= 8'h0A;             // newline
+                tx_dv_dbg   <= 1'b1;
+                dbg_active  <= 1'b0;              // done streaming
+            end else begin
+                dbg_i <= dbg_i + 1;
+            end
+            end
+        end
+        end
+    end
+    end
+
+    // OR the debug bytes with the normal single-digit TX
+    assign tx_dv   = tx_start | tx_dv_dbg;
+    assign tx_byte = tx_dv_dbg ? tx_byte_dbg
+                            : (ASCII_0 + {4'b0000, predicted_digit});
 
     uart_tx #(.CLKS_PER_BIT(CLKS_PER_BIT)) TX (
         .clk, .reset, .tx_dv(tx_dv), .tx_byte(tx_byte),
