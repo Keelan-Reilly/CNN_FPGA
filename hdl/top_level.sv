@@ -91,6 +91,36 @@ module top_level #(
         end
     end
 
+    // -------- IFMAP debug: checksum + min/max + small snapshot of RX bytes --------
+    localparam bit DEBUG_IFMAP_STATS = 1'b0;       // set 0 to disable
+    localparam int DEBUG_IFMAP_ECHO_BYTES = 0;    // first N RX bytes to echo (0..128 ok)
+
+    logic [31:0] if_sum;
+    logic [7:0]  if_min, if_max;
+    logic [7:0]  rx_snapshot   [0:DEBUG_IFMAP_ECHO_BYTES>0?DEBUG_IFMAP_ECHO_BYTES-1:0];
+    logic [$clog2((DEBUG_IFMAP_ECHO_BYTES>0)?DEBUG_IFMAP_ECHO_BYTES:1)-1:0] snap_idx;
+
+    // --- IFMAP stats & snapshot ---
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            if_sum <= 32'd0; if_min <= 8'hFF; if_max <= 8'h00; snap_idx <= '0;
+        end else if (rx_dv) begin
+            // Start-of-frame detection: first byte of 28x28
+            if (r==0 && c==0) begin
+                if_sum <= 32'd0; if_min <= 8'hFF; if_max <= 8'h00; snap_idx <= '0;
+            end
+            if (DEBUG_IFMAP_STATS) begin
+                if_sum <= if_sum + rx_byte;
+                if (rx_byte < if_min) if_min <= rx_byte;
+                if (rx_byte > if_max) if_max <= rx_byte;
+            end
+            if (DEBUG_IFMAP_ECHO_BYTES > 0 && snap_idx < DEBUG_IFMAP_ECHO_BYTES) begin
+                rx_snapshot[snap_idx] <= rx_byte;
+                snap_idx <= snap_idx + 1'b1;
+            end
+        end
+    end
+
     // ---------------- BRAMs ----------------
 
     // IFMAP: UART writes (A), conv2d reads (B)
@@ -234,70 +264,170 @@ module top_level #(
         .vec(logits), .idx(predicted_digit), .done(argmax_done)
     );
 
-    // UART TX
+    // =================== UART TX & DEBUG STREAMS ===================
     logic tx_ready = argmax_done;
     logic tx_busy, tx_dv; logic [7:0] tx_byte;
     localparam logic [7:0] ASCII_0 = 8'h30;
 
-    // --- DEBUG: stream 10 logits (signed 16-bit) right after dense_done ---
-    localparam bit DEBUG_LOGITS = 1'b0;   // set to 0 to disable
-    logic        tx_dv_dbg;
-    logic [7:0]  tx_byte_dbg;
-    logic        dbg_active;
-    logic [3:0]  dbg_i;
-    logic [1:0]  dbg_byte_sel;
-    logic [15:0] dbg_word;
+    // -------- DEBUG SELECTS --------
+    localparam bit DEBUG_LOGITS     = 1'b0;   // was in your file already
+    // IFMAP stats / echo & DENSE tap are controlled by DEBUG_IFMAP_STATS / D_TAP_N above
+
+    // Per-stream tx strobes
+    logic        tx_dv_I, tx_dv_B, tx_dv_D, tx_dv_L;
+    logic [7:0]  tx_byte_I, tx_byte_B, tx_byte_D, tx_byte_L;
+
+    // ---------------- IFMAP stats stream: 'I' + sum(4B BE) + min + max + '\n' ----------------
+    logic dbgI_active;
+    logic [2:0] dbgI_step; // 0:'I',1:sum[31:24],2:[23:16],3:[15:8],4:[7:0],5:min,6:max,7:'\n' done
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            dbgI_active <= 1'b0; dbgI_step <= 3'd0; tx_dv_I <= 1'b0; tx_byte_I <= 8'h00;
+        end else begin
+            tx_dv_I <= 1'b0;
+            if (DEBUG_IFMAP_STATS && frame_loaded) begin
+                dbgI_active <= 1'b1; dbgI_step <= 3'd0;
+            end
+            if (dbgI_active && !tx_busy) begin
+                tx_dv_I <= 1'b1;
+                unique case (dbgI_step)
+                3'd0: begin tx_byte_I <= 8'h49;          /* 'I' */   dbgI_step <= 3'd1; end
+                3'd1: begin tx_byte_I <= if_sum[31:24];  dbgI_step <= 3'd2; end
+                3'd2: begin tx_byte_I <= if_sum[23:16];  dbgI_step <= 3'd3; end
+                3'd3: begin tx_byte_I <= if_sum[15:8];   dbgI_step <= 3'd4; end
+                3'd4: begin tx_byte_I <= if_sum[7:0];    dbgI_step <= 3'd5; end
+                3'd5: begin tx_byte_I <= if_min;         dbgI_step <= 3'd6; end
+                3'd6: begin tx_byte_I <= if_max;         dbgI_step <= 3'd7; end
+                default: begin tx_byte_I <= 8'h0A;       dbgI_active <= 1'b0; end
+                endcase
+            end
+        end
+    end
+
+    // ---------------- IFMAP echo of first N RX bytes: 'B' + N bytes + '\n' ----------------
+    localparam int ECHO_N = (DEBUG_IFMAP_ECHO_BYTES>0)?DEBUG_IFMAP_ECHO_BYTES:0;
+    logic dbgB_active;
+    logic [$clog2(ECHO_N+1)-1:0] dbgB_idx;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            dbgB_active <= 1'b0; dbgB_idx <= '0; tx_dv_B <= 1'b0; tx_byte_B <= 8'h00;
+        end else begin
+            tx_dv_B <= 1'b0;
+            if (ECHO_N>0 && frame_loaded && !tx_busy) begin
+                dbgB_active <= 1'b1; dbgB_idx <= '0; tx_byte_B <= 8'h42; // 'B'
+                tx_dv_B <= 1'b1;
+            end else if (dbgB_active && !tx_busy) begin
+                tx_dv_B <= 1'b1;
+                if (tx_byte_B == 8'h42) begin
+                    // just sent header; send first payload byte next
+                    tx_byte_B <= (ECHO_N>0) ? rx_snapshot[0] : 8'h0A;
+                    if (ECHO_N==0) begin dbgB_active <= 1'b0; end
+                end else if (dbgB_idx < ECHO_N) begin
+                    tx_byte_B <= rx_snapshot[dbgB_idx];
+                    dbgB_idx  <= dbgB_idx + 1'b1;
+                    if (dbgB_idx == ECHO_N-1) begin
+                        // newline after last byte on next opportunity
+                    end
+                end else begin
+                    tx_byte_B  <= 8'h0A;
+                    dbgB_active<= 1'b0;
+                end
+            end
+        end
+    end
+
+    // ---------------- DENSE tap stream: 'D' + N*(addr16,data16) + '\n' ----------------
+    logic dbgD_active;
+    logic [$clog2(D_TAP_N+1)-1:0] dbgD_idx;
+    logic [2:0] dbgD_phase; // 0:header, 1:addr_hi, 2:addr_lo, 3:data_hi, 4:data_lo
 
     always_ff @(posedge clk) begin
     if (reset) begin
-        dbg_active   <= 1'b0;
-        dbg_i        <= '0;
-        dbg_byte_sel <= '0;
-        tx_dv_dbg    <= 1'b0;
-        tx_byte_dbg  <= 8'h00;
+        dbgD_active <= 1'b0; dbgD_idx <= '0; dbgD_phase <= 3'd0;
+        tx_dv_D <= 1'b0; tx_byte_D <= 8'h00;
     end else begin
-        tx_dv_dbg <= 1'b0; // default LOW each cycle
+        tx_dv_D <= 1'b0;
 
-        // Kick off stream right after DENSE completes
-        if (DEBUG_LOGITS && dense_done) begin
-        dbg_active   <= 1'b1;
-        dbg_i        <= 0;
-        dbg_byte_sel <= 0;
-        tx_byte_dbg  <= 8'h4C;   // 'L' header
-        tx_dv_dbg    <= 1'b1;
-        end else
-        // When not busy, push next byte of the stream
-        if (dbg_active && !tx_busy) begin
-        if (tx_byte_dbg == 8'h4C) begin
-            // just sent header; send first logit high byte
-            tx_byte_dbg <= logits[0][15:8];
-            tx_dv_dbg   <= 1'b1;
+        if (DEBUG_DENSE_TAP && dense_done) begin
+        dbgD_active <= 1'b1; dbgD_idx <= '0; dbgD_phase <= 3'd0;
+        end
+
+        if (dbgD_active && !tx_busy) begin
+        tx_dv_D <= 1'b1;
+        unique case (dbgD_phase)
+            3'd0: begin // header 'D'
+            tx_byte_D  <= 8'h44;
+            dbgD_phase <= 3'd1;
+            end
+            3'd1: begin // addr_hi
+            tx_byte_D  <= { {(16-PO_AW){1'b0}}, d_tap_addr[dbgD_idx] }[15:8];
+            dbgD_phase <= 3'd2;
+            end
+            3'd2: begin // addr_lo
+            tx_byte_D  <= { {(16-PO_AW){1'b0}}, d_tap_addr[dbgD_idx] }[7:0];
+            dbgD_phase <= 3'd3;
+            end
+            3'd3: begin // data_hi
+            tx_byte_D  <= d_tap_data[dbgD_idx][15:8];
+            dbgD_phase <= 3'd4;
+            end
+            default: begin // 3'd4: data_lo
+            tx_byte_D  <= d_tap_data[dbgD_idx][7:0];
+            if (dbgD_idx == D_TAP_N-1) begin
+                dbgD_phase <= 3'd5; // newline next
+            end else begin
+                dbgD_idx   <= dbgD_idx + 1'b1;
+                dbgD_phase <= 3'd1; // next tuple
+            end
+            end
+        endcase
+
+        if (dbgD_phase == 3'd5) begin
+            tx_byte_D   <= 8'h0A;
+            dbgD_active <= 1'b0;
+        end
+        end
+    end
+    end
+
+    // ---------------- Logits stream (existing): 'L' + 10*int16 + '\n' ----------------
+    logic dbgL_active;
+    logic [3:0] dbgL_i;
+    logic       dbgL_hi;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            dbgL_active <= 1'b0; dbgL_i <= '0; dbgL_hi <= 1'b0; tx_dv_L <= 1'b0; tx_byte_L <= 8'h00;
         end else begin
-            dbg_word    = logits[dbg_i];
-            tx_byte_dbg <= (dbg_byte_sel == 1'b0) ? dbg_word[15:8] : dbg_word[7:0];
-            tx_dv_dbg   <= 1'b1;
-
-            if (dbg_byte_sel == 1'b0) begin
-            dbg_byte_sel <= 1'b1;               // next time send low byte
-            end else begin
-            dbg_byte_sel <= 1'b0;               // finished one word
-            if (dbg_i == NUM_CLASSES-1) begin
-                tx_byte_dbg <= 8'h0A;             // newline
-                tx_dv_dbg   <= 1'b1;
-                dbg_active  <= 1'b0;              // done streaming
-            end else begin
-                dbg_i <= dbg_i + 1;
-            end
+            tx_dv_L <= 1'b0;
+            if (DEBUG_LOGITS && dense_done) begin
+                dbgL_active <= 1'b1; dbgL_i <= 4'd0; dbgL_hi <= 1'b1; tx_byte_L <= 8'h4C; // 'L'
+                tx_dv_L <= 1'b1;
+            end else if (dbgL_active && !tx_busy) begin
+                tx_dv_L <= 1'b1;
+                if (tx_byte_L == 8'h4C) begin
+                    tx_byte_L <= logits[0][15:8];
+                end else begin
+                    logic [15:0] w = logits[dbgL_i];
+                    tx_byte_L <= dbgL_hi ? w[15:8] : w[7:0];
+                    dbgL_hi   <= ~dbgL_hi;
+                    if (!dbgL_hi) begin // finished lo byte
+                        if (dbgL_i == NUM_CLASSES-1) begin
+                            tx_byte_L  <= 8'h0A;
+                            dbgL_active<= 1'b0;
+                        end else dbgL_i <= dbgL_i + 1'b1;
+                    end
+                end
             end
         end
-        end
-    end
     end
 
-    // OR the debug bytes with the normal single-digit TX
-    assign tx_dv   = tx_start | tx_dv_dbg;
-    assign tx_byte = tx_dv_dbg ? tx_byte_dbg
-                            : (ASCII_0 + {4'b0000, predicted_digit});
+    // ------------- Final TX mux -------------
+    assign tx_dv   = tx_start | tx_dv_I | tx_dv_B | tx_dv_D | tx_dv_L;
+    assign tx_byte = tx_dv_I ? tx_byte_I :
+                    tx_dv_B ? tx_byte_B :
+                    tx_dv_D ? tx_byte_D :
+                    tx_dv_L ? tx_byte_L :
+                    (ASCII_0 + {4'b0000, predicted_digit});
 
     uart_tx #(.CLKS_PER_BIT(CLKS_PER_BIT)) TX (
         .clk, .reset, .tx_dv(tx_dv), .tx_byte(tx_byte),
@@ -392,6 +522,37 @@ module top_level #(
     wire [PO_AW-1:0] addr_ch  = ( {hwc_ch,7'b0} + {hwc_ch,6'b0} + {hwc_ch,3'b0} ) - {hwc_ch,2'b0}; // 128+64+8-4 = 196
     wire [PO_AW-1:0] addr_row = ( {hwc_row,4'b0} ) - {hwc_row,1'b0};                                // 16-2 = 14
     assign poolB_addr = addr_ch + addr_row + PO_AW'(hwc_col);
+
+    // -------- DENSE tap: capture first N (addr,data) reads from POOL BRAM --------
+    localparam bit DEBUG_DENSE_TAP = 1'b0;     // set 0 to disable
+    localparam int D_TAP_N = 16;
+
+    logic                     d_in_en_q;
+    logic [PO_AW-1:0]         poolB_addr_q;    // address issued on previous cycle
+    logic [$clog2(D_TAP_N):0] d_tap_cnt;
+    logic [PO_AW-1:0]         d_tap_addr [0:D_TAP_N-1];
+    logic signed [DATA_WIDTH-1:0] d_tap_data [0:D_TAP_N-1];
+
+    always_ff @(posedge clk) begin
+    if (reset) begin
+        d_in_en_q   <= 1'b0;
+        poolB_addr_q<= '0;
+        d_tap_cnt   <= '0;
+    end else begin
+        d_in_en_q <= dense_in_en;
+        if (dense_start) d_tap_cnt <= '0;
+
+        // issue address registered last cycle
+        if (dense_in_en) poolB_addr_q <= poolB_addr;
+
+        // capture (addr,data) when previous cycle requested a read
+        if (DEBUG_DENSE_TAP && d_in_en_q && (d_tap_cnt < D_TAP_N)) begin
+        d_tap_addr[d_tap_cnt] <= poolB_addr_q;
+        d_tap_data[d_tap_cnt] <= poolB_q;      // 1-cycle latency data
+        d_tap_cnt             <= d_tap_cnt + 1'b1;
+        end
+    end
+    end
 
 
 `ifndef SYNTHESIS
