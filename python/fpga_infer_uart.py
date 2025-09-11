@@ -3,6 +3,8 @@ import argparse, time, pathlib
 import serial
 import torch, torch.nn as nn, torch.nn.functional as F
 import numpy as np, os
+import time
+
 
 # --- Model must match training/export ---
 class SmallCNN(nn.Module):
@@ -11,10 +13,13 @@ class SmallCNN(nn.Module):
         self.conv1 = nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=1)
         self.pool = nn.MaxPool2d(2)
         self.fc1 = nn.Linear(8 * 14 * 14, 10)
+
     def forward(self, x):
-        x = F.relu(self.conv1(x)); x = self.pool(x)
+        x = F.relu(self.conv1(x))
+        x = self.pool(x)
         x = x.view(x.size(0), -1)
         return self.fc1(x)
+
 
 def load_mem(path):
     lines = [l.strip() for l in open(path) if l.strip()]
@@ -22,23 +27,32 @@ def load_mem(path):
         raise ValueError(f"{path}: expected 784 lines, got {len(lines)}")
     return bytes(int(h, 16) for h in lines)
 
+
 def load_bin(path):
     b = pathlib.Path(path).read_bytes()
     if len(b) != 784:
         raise ValueError(f"{path}: expected 784 bytes, got {len(b)}")
     return b
 
+
 def load_image_bytes(path):
-    return load_bin(path) if pathlib.Path(path).suffix.lower() == ".bin" else load_mem(path)
+    return (
+        load_bin(path)
+        if pathlib.Path(path).suffix.lower() == ".bin"
+        else load_mem(path)
+    )
+
 
 def bytes_to_tensor_0_1(img_bytes):
-    arr = np.frombuffer(img_bytes, dtype=np.uint8).reshape(1,1,28,28)
+    arr = np.frombuffer(img_bytes, dtype=np.uint8).reshape(1, 1, 28, 28)
     return torch.tensor(arr, dtype=torch.float32) / 255.0
+
 
 def sw_predict(model_dir, img_bytes):
     model = SmallCNN()
     state = torch.load(os.path.join(model_dir, "small_cnn.pth"), map_location="cpu")
-    model.load_state_dict(state); model.eval()
+    model.load_state_dict(state)
+    model.eval()
     x = bytes_to_tensor_0_1(img_bytes)
     with torch.no_grad():
         logits = model(x)
@@ -46,30 +60,91 @@ def sw_predict(model_dir, img_bytes):
         conf = torch.softmax(logits, dim=1)[0, pred].item()
     return pred, conf
 
-def hw_predict(port, baud, timeout, img_bytes, reset_wait):
-    with serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1, timeout=timeout) as ser:
-        print(f"Opened {ser.name} @ {baud} 8N1")
-        print("If needed, press board RESET…")
+
+def _read_exact(ser, n, timeout):
+    end = time.time() + timeout
+    out = bytearray()
+    while len(out) < n:
+        chunk = ser.read(n - len(out))
+        if chunk:
+            out += chunk
+        elif time.time() > end:
+            raise TimeoutError(f"Timed out reading {n} bytes (got {len(out)})")
+    return bytes(out)
+
+
+def _read_until(ser, target_byte, timeout):
+    end = time.time() + timeout
+    while True:
+        b = ser.read(1)
+        if b == target_byte:
+            return
+        if not b and time.time() > end:
+            raise TimeoutError(f"Timed out waiting for {target_byte!r}")
+
+
+def hw_predict(
+    port, baud, timeout, img_bytes, reset_wait, debug=False, echo_logit_line=False
+):
+    with serial.Serial(
+        port, baud, bytesize=8, parity="N", stopbits=1, timeout=timeout
+    ) as ser:
+        # Clean any stale bytes (old digits, headers, etc.)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+
+        # Optional board reset window
         time.sleep(reset_wait)
-        n = ser.write(img_bytes); ser.flush()
-        if n != 784: raise RuntimeError(f"Wrote {n} bytes (expected 784)")
-        rx = ser.read(1)
-        if len(rx) != 1: raise TimeoutError("Timed out waiting for prediction byte")
-        ch = rx.decode(errors="ignore")
-        if not ch.isdigit():
-            print(f"Got non-digit: 0x{rx[0]:02X}")
-            return None
-        return ord(ch) - ord("0")
+
+        n = ser.write(img_bytes)
+        ser.flush()
+        if n != 784:
+            raise RuntimeError(f"Wrote {n} bytes (expected 784)")
+
+        logits = None
+        if debug:
+            # Wait for 'L', then read 10 int16 (big-endian), then optional '\n'
+            _read_until(ser, b"L", timeout)
+            raw = _read_exact(ser, 20, timeout)
+            logits = [
+                int.from_bytes(raw[i : i + 2], "big", signed=True)
+                for i in range(0, 20, 2)
+            ]
+            # Eat a possible newline if present (don’t block on it)
+            ser.timeout = 0.01
+            _ = ser.read(1)  # may be b'\n' or nothing
+            ser.timeout = timeout
+            if echo_logit_line:
+                print("[HW logits]", logits)
+
+        # Read the first ASCII digit, skipping any stray non-digits
+        end = time.time() + timeout
+        while True:
+            b = ser.read(1)
+            if b and b.isdigit():
+                return (b[0] - ord("0"), logits)
+            if not b and time.time() > end:
+                raise TimeoutError("Timed out waiting for prediction byte")
+            # else: ignore anything non-digit (e.g. stray '\n' or headers)
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", default="weights/input_image.mem")
     ap.add_argument("--model-dir", default="./output")
-    ap.add_argument("--port", default="COM4")      # set your default here
+    ap.add_argument("--port", default="COM4")  # set your default here
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--timeout", type=float, default=3.0)
     ap.add_argument("--reset-wait", type=float, default=0.6)
-    ap.add_argument("--trials", type=int, default=5, help="repeat HW to check stability")
+    ap.add_argument(
+        "--trials", type=int, default=5, help="repeat HW to check stability"
+    )
+    ap.add_argument(
+        "--debug",
+        action="store_true",
+        help="Expect 'L'+20 logit bytes before the digit",
+    )
+    ap.add_argument("--echo-logits", action="store_true", help="Print parsed HW logits")
     args = ap.parse_args()
 
     img_bytes = load_image_bytes(args.image)
@@ -80,17 +155,28 @@ def main():
     hw_preds = []
     for t in range(args.trials):
         try:
-            hw = hw_predict(args.port, args.baud, args.timeout, img_bytes, args.reset_wait)
-            print(f"[HW] trial {t+1}: {hw}")
+            hw, hw_logits = hw_predict(
+                args.port,
+                args.baud,
+                args.timeout,
+                img_bytes,
+                args.reset_wait,
+                debug=args.debug,
+                echo_logit_line=args.echo_logits,
+            )
+            print(f"[HW] trial {t + 1}: {hw}")
+            if hw_logits is not None:
+                print(f"[HW] logits: {hw_logits}")
             hw_preds.append(hw)
         except Exception as e:
-            print(f"[HW] trial {t+1} ERROR: {e}")
+            print(f"[HW] trial {t + 1} ERROR: {e}")
             hw_preds.append(None)
 
     agree = sum(1 for p in hw_preds if p == sw_pred)
     print(f"\nAgreement: {agree}/{len(hw_preds)} trials equal to SW ({sw_pred}).")
     if agree != len(hw_preds):
         print("⚠️  Mismatch/instability detected — likely timing-related on FPGA.")
+
 
 if __name__ == "__main__":
     main()
