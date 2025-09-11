@@ -297,54 +297,44 @@ module top_level #(
     // POOL BRAM Port B (dense reader)
     assign poolB_en = dense_in_en;
 
-    localparam int OS = POOLED;
-    localparam int C  = OUT_CHANNELS;
-    localparam int CH_STRIDE_PO = OS*OS;
+    // ---------------- POOL BRAM Port B (dense reader) ----------------
+    // Drive BRAM addr in HWC order, but compute CHW-linear address with
+    // shift-add constants (OS=14 -> 14=16-2, OS*OS=196 -> 200-4).
+    localparam int OS = POOLED;           // 14
+    localparam int C  = OUT_CHANNELS;     // 8
 
-    logic [PO_AW-1:0] poolB_addr_r;
-    assign poolB_addr = poolB_addr_r;
-
-    logic [$clog2(C)-1:0]   hwc_ch;
-    logic [$clog2(OS)-1:0]  hwc_row, hwc_col;
-    logic [PO_AW-1:0]       ch_off, row_off;
+    // Small counters that step only when dense asks for the next element
+    logic [$clog2(C)-1:0]  hwc_ch;
+    logic [$clog2(OS)-1:0] hwc_row, hwc_col;
 
     always_ff @(posedge clk) begin
     if (reset) begin
-        hwc_ch<=0; hwc_row<=0; hwc_col<=0;
-        ch_off<=0; row_off<=0;
-        poolB_addr_r<=0;
+        hwc_ch  <= '0; hwc_row <= '0; hwc_col <= '0;
     end else begin
-        // If dense just started, reset the sequencer
         if (dense_start) begin
-        hwc_ch<=0; hwc_row<=0; hwc_col<=0;
-        ch_off<=0; row_off<=0;
-        poolB_addr_r<=0;
-        end
-        if (dense_in_en) begin
-        // issue current address (CHW)
-        poolB_addr_r <= ch_off + row_off + PO_AW'(hwc_col);
-
-        // advance HWC counters for next request
+        hwc_ch  <= '0; hwc_row <= '0; hwc_col <= '0;
+        end else if (dense_in_en) begin
         if (hwc_ch == C-1) begin
-            hwc_ch <= 0; ch_off <= 0;
+            hwc_ch <= '0;
             if (hwc_col == OS-1) begin
-            hwc_col <= 0;
-            if (hwc_row == OS-1) begin
-                hwc_row <= 0; row_off <= 0;
-            end else begin
-                hwc_row <= hwc_row + 1; 
-                row_off <= row_off + PO_AW'(OS);
-            end
+            hwc_col <= '0;
+            if (hwc_row == OS-1) hwc_row <= '0;
+            else                  hwc_row <= hwc_row + 1;
             end else begin
             hwc_col <= hwc_col + 1;
             end
         end else begin
-            hwc_ch  <= hwc_ch + 1;
-            ch_off  <= ch_off + PO_AW'(CH_STRIDE_PO);
+            hwc_ch <= hwc_ch + 1;
         end
         end
     end
     end
+
+    // CHW address = ch*(OS*OS) + row*OS + col
+    wire [PO_AW-1:0] addr_ch  = ( {hwc_ch,7'b0} + {hwc_ch,6'b0} + {hwc_ch,3'b0} ) - {hwc_ch,2'b0}; // 128+64+8-4 = 196
+    wire [PO_AW-1:0] addr_row = ( {hwc_row,4'b0} ) - {hwc_row,1'b0};                                // 16-2 = 14
+    assign poolB_addr = addr_ch + addr_row + PO_AW'(hwc_col);
+
 
 `ifndef SYNTHESIS
     // ---------------- Performance (sim only) ----------------

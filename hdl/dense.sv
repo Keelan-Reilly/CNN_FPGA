@@ -7,7 +7,7 @@ module dense #(
   parameter int FRAC_BITS  = 7,
   parameter int IN_DIM     = 1568,
   parameter int OUT_DIM    = 10,
-  parameter int POST_SHIFT = 4, // try 1..3;
+  parameter int POST_SHIFT = 2, // try 1..3;
   parameter string WEIGHTS_FILE = "fc1_weights.mem",
   parameter string BIASES_FILE  = "fc1_biases.mem"
 )(
