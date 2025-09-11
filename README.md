@@ -1,23 +1,28 @@
 # Quantised CNN Inference Accelerator
 
-This project implements a simple digit-classification convolutional neural network in SystemVerilog. The CNN processes a downsampled 16×16 grayscale image through conv–ReLU–pool–dense–argmax stages. It receives input via UART, performs inference on FPGA, and transmits the predicted digit as a single byte over UART.
+This project implements a digit-classification CNN in SystemVerilog. The pipeline runs conv → ReLU → maxpool → dense → argmax entirely in RTL using BRAM-backed buffers. A UART RX feeds a 28×28 grayscale image (784 bytes) into IFMAP memory; after inference, a single ASCII digit (‘0’–‘9’) is transmitted over UART TX.
+
+Cycle-accurate simulation is done with Verilator; a small Python harness compares software vs hardware predictions over a serial port.
 
 It demonstrates how neural network inference can be run entirely in RTL using pipelined hardware with streaming interfaces, and can be tested using cycle-accurate simulation via Verilator.
 
 ---
 
 ### Key Results
-- **Latency:** ~88,743 cycles total (~354 µs at 250 MHz)
-- **Prediction:** Matches ground truth (e.g., predicted digit: 4, UART byte: 0x34)
+- **Latency:** ~227395 cycles total (~2.27 at 1000 MHz)
+- **Prediction:** Matches ground truth (e.g., predicted digit: 7, UART byte: 0x37)
 - **Top module:** `top_level.sv`
 - **Simulation:** Verilator harness with timestamped stage output
 
 ---
 
 ### Architecture Pipeline
-- UART input → conv2d → relu → maxpool → dense → argmax → UART output
-- *flattening is handled internally between maxpool and dense*
-- Stages are pipelined with valid/ready handshakes and run sequentially.
+- UART RX → IFMAP BRAM (28×28) → conv2d → CONV BRAM → relu → maxpool → dense → argmax → UART TX
+- BRAM topology
+	•	IFMAP: single write port (UART) + read port (conv2d)
+	•	CONV buffer: true dual-port (A=read for ReLU/Pool, B=write from conv/ReLU)
+	•	POOL buffer: single write (from pool) + read (for dense)
+- Pooling FSM: strictly linear CHW order (no address math in the critical path).
 - Inference begins after 256 bytes (16×16) are received via UART.
 
 ---
@@ -31,7 +36,9 @@ It demonstrates how neural network inference can be run entirely in RTL using pi
 - **hdl/maxpool.sv** — Executes 2×2 max pooling for downsampling.
 - **hdl/dense.sv** — Fully connected layer using integer-weight MAC operations.
 - **hdl/argmax.sv** — Selects the neuron with the highest activation.
-- **hdl/uart.sv** — UART receiver (8N1 format) for input data. UART transmitter for sending prediction results (digits 0–9).
+- **hdl/uart.sv** — UART receiver (8N1 format) for input data. UART transmitter for sending 
+- **hdl/bram_sdp.sv, hdl/bram_tdp.sv** — simple/true dual-port RAMs
+prediction results (digits 0–9).
 
 ---
 
@@ -40,6 +47,14 @@ It demonstrates how neural network inference can be run entirely in RTL using pi
 - obj_dir/ — Verilator build output.
 
 ---
+
+## Python (helpers & host)
+	•	python/train.py — defines/trains the PyTorch reference model
+	•	python/quantise.py — exports fixed-point weights/biases to .mem
+	•	python/make_image_mem.py — converts PNG → .mem / .bin (784 bytes)
+	•	python/verify_fixed_point.py — sanity checks on quantised math
+	•	python/fpga_infer_uart.py — sends image bytes to the FPGA and reads prediction. Runs PyTorch model on the same image and compares to hardware result.
+
 
 # Quick Start
 
@@ -52,18 +67,29 @@ Expected output (example):
 
 ```bash
 ---- Performance Report ----
-Frame cycles: 87843
- conv  = 62723
- relu  = 6275
- pool  = 1571
- flat  = 1569
- dense = 15693
+Frame cycles: 227395
+ conv  = 175619
+ relu  = 12547
+ pool  = 7843
+ flat  = 1
+ dense = 31373
  argmx = 12
 ----------------------------
-TX byte: 0x34  (4)
-Predicted digit (numeric): 4
+TX byte: 0x37  (7)
+Predicted digit (numeric): 7
 ```
-Each stage runs sequentially. While the argmax module itself is combinational, the observed delay may span several cycles due to FSM handoff latency and synchronisation with the TX start trigger, especially at higher clock frequencies.
+
+## 2) Program FPGA & test over UART
+1.	Build/flash your bitstream.
+2.	Send an image and read back the prediction:
+
+Output(Example)
+``` bash
+[SW] predicted 7  (conf 1.000)
+[HW] trial 1: 7
+...
+Agreement: 5/5 trials equal to SW (7).
+```
 
 # CNN Architecture
 
@@ -98,7 +124,7 @@ This CNN classifies 16×16 grayscale digit images using the following sequence o
 
 | Parameter      | Value                        |
 |----------------|----------------------------- |
-| Input size     | 16×16                        |
+| Input size     | 28×28                        |
 | Conv kernel    | 3×3                          |
 | Pooling size   | 2×2                          |
 | Dense outputs  | 10 (digits)                  |
@@ -140,15 +166,9 @@ This CNN classifies 16×16 grayscale digit images using the following sequence o
 
 # How Inference Works
 
-1. **UART_RX**
-    - Receives 256 bytes (16×16 grayscale image)
-    - Signals `frame_loaded` to start the pipeline
-
-2. **Pipeline Control**
-    - Finite State Machine (FSM) activates each stage in sequence: conv → relu → pool → dense → argmax
-
-3. **TX Output**
-    - Argmax result (digit 0–9) is transmitted via UART
+1.	UART_RX collects exactly 784 bytes and writes them into IFMAP BRAM; when the last byte arrives, it asserts frame_loaded.
+2.	FSM controller sequences stages: conv → relu → pool → dense → argmax.
+3.	UART_TX sends the ASCII digit of the final argmax result (unless debug streams are enabled, in which case those packets go first).
 
 ---
 
@@ -163,11 +183,9 @@ This CNN classifies 16×16 grayscale digit images using the following sequence o
 
 # Notes and Limitations
 
-- Input images must be preprocessed to 16×16 grayscale before transmission.
-- All weights are quantised integers; MAC operations use fixed-point arithmetic (no floating point).
-- UART TX/RX modules assume 8N1 format, 115200 baud rate, and 100 MHz input clock by default.
-- The pipeline is designed for sequential stage execution; parallelism or multi-frame batching is not supported.
-- Only single-digit classification is implemented (digits 0–9).
-- For custom datasets or clock rates, RTL parameters and UART settings may require modification.
-- No hardware support for image normalization or advanced preprocessing.
-- Verilator simulation is cycle-accurate but does not model UART timing or external hardware delays.
+- Images must be preprocessed to 28×28 grayscale and supplied as 784 bytes (.mem hex lines or raw .bin).
+- The design uses sequential stage execution (no multi-frame batching).
+- Quantised fixed-point (no floating point); ensure POST_SHIFT matches your export.
+- UART assumes 8N1 at the configured BAUD_RATE, clocked by CLK_FREQ_HZ.
+- The pooling module and dense address sequencer are designed for timing-clean, linear access into BRAM.
+- Verilator sim reports per-stage cycle counts; hardware timing will depend on your target and constraints.
