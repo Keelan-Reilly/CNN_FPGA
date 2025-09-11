@@ -7,11 +7,11 @@
 set_property CFGBVS VCCO            [current_design]
 set_property CONFIG_VOLTAGE 3.3     [current_design]
 
-# --- 50 MHz system clock (onboard oscillator) ---
+# --- 100 MHz system clock (onboard oscillator) ---
 # Basys3 sysclk is on pin W5, 3.3V LVCMOS
 set_property PACKAGE_PIN W5         [get_ports clk]
 set_property IOSTANDARD LVCMOS33    [get_ports clk]
-create_clock -name sys_clk -period 20.000 [get_ports clk]
+create_clock -name sys_clk -period 10.000 [get_ports clk]
 
 # --- Reset button (BTN_C / Center button) ---
 # Active-high reset in your CNN code -> press BTN_C to assert reset
