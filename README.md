@@ -19,9 +19,9 @@ It demonstrates how neural network inference can be run entirely in RTL using pi
 ### Architecture Pipeline
 - UART RX → IFMAP BRAM (28×28) → conv2d → CONV BRAM → relu → maxpool → dense → argmax → UART TX
 - BRAM topology
-	•	IFMAP: single write port (UART) + read port (conv2d)
-	•	CONV buffer: true dual-port (A=read for ReLU/Pool, B=write from conv/ReLU)
-	•	POOL buffer: single write (from pool) + read (for dense)
+  	- IFMAP: single write port (UART) + read port (conv2d)
+	- CONV buffer: true dual-port (A=read for ReLU/Pool, B=write from conv/ReLU)
+	- POOL buffer: single write (from pool) + read (for dense)
 - Pooling FSM: strictly linear CHW order (no address math in the critical path).
 - Inference begins after 256 bytes (16×16) are received via UART.
 
