@@ -1,6 +1,14 @@
-//======================================================================
-// relu.sv — ReLU Activation over BRAM (in-place), lint-clean
-//======================================================================
+//------------------------------------------------------------------------------
+//  Module: relu.sv
+//  Description:
+//    This module implements the ReLU (Rectified Linear Unit) activation function
+//    over data stored in BRAM. It operates in-place, meaning the input data in
+//    BRAM is overwritten with the activated output. The module reads each value
+//    from BRAM, applies the ReLU function (output = max(0, input)), and writes
+//    the result back to the same location. Designed to be lint-clean for
+//    integration into FPGA-based CNN accelerators.
+//------------------------------------------------------------------------------
+
 (* keep_hierarchy = "yes" *)
 module relu #(
     parameter int DATA_WIDTH = 16,

@@ -1,6 +1,10 @@
-//======================================================================
-// dense.sv — Fully-connected layer (input from BRAM), lint-clean
-//======================================================================
+//----------------------------------------------------------------------
+// This module interfaces with BRAM to read input activations, 
+// then performs matrix-vector multiplication
+// using stored weights to compute output activations. The design is
+// optimized for efficient hardware execution and is lint-clean for
+// synthesis and verification.
+//----------------------------------------------------------------------
 (* keep_hierarchy = "yes" *)
 module dense #(
   parameter int DATA_WIDTH = 16,
@@ -96,15 +100,20 @@ module dense #(
 
   always_ff @(posedge clk) begin
     if (reset) begin
-      state <= IDLE; done <= 1'b0;
-      o <= 0; i <= 0; acc <= '0; prod <= '0; w_addr <= '0; w_base <= '0;
+      state <= IDLE; 
+      done <= 1'b0;
+      o <= 0; 
+      i <= 0; 
+      acc <= '0; 
+      prod <= '0; 
+      w_addr <= '0; w_base <= '0;
       in_en <= 1'b0; in_addr <= '0;
     end else begin
       done  <= 1'b0;
-      in_en <= 1'b0;                 // default LOW; we'll raise it in READ
+      in_en <= 1'b0;                 // default LOW; raised in READ
 
       unique case (state)
-        // Prime addresses only; don't assert in_en here
+        // Prime addresses only; wait for `start`
         IDLE: if (start) begin
                  o <= 0; i <= 0;
                  acc     <= bias_ext(B[0]);
@@ -116,7 +125,7 @@ module dense #(
 
         // Assert in_en so BRAM outputs in_q for the address set previously
         READ: begin
-                 in_en <= 1'b1;      // <-- important: enable happens in READ
+                 in_en <= 1'b1;      // enable happens in READ
                  state <= MAC;
                end
 
@@ -154,7 +163,7 @@ module dense #(
 
                    w_base  <= w_base + w_addr_t'(IN_DIM);
                    w_addr  <= w_base + w_addr_t'(IN_DIM);
-                   state   <= READ;    // next cycle we'll assert in_en
+                   state   <= READ;    // next cycle assert in_en
                  end
                end
 

@@ -1,20 +1,18 @@
-//======================================================================
-// fsm_controller.sv — Pipeline Controller for CNN Top Level
 //----------------------------------------------------------------------
-// What this module does:
-//   • Coordinates the stages of the CNN pipeline (conv → relu → pool
-//     → flatten → dense → argmax/tx).
-//   • Waits for each stage to assert its `done` signal, then pulses
-//     the `start` signal of the next stage.
-//   • Prevents overlapping by ensuring only one stage runs at a time.
-//   • Also checks `tx_busy` so UART transmission isn’t triggered early.
-//
-// Key points:
-//   • Input: `frame_loaded` to begin; stage `*_done` signals.
-//   • Output: single-cycle `*_start` pulses to enable each stage.
-//   • Busy flag indicates pipeline is working.
-//   • Simple FSM steps through stages in fixed order.
-//======================================================================
+// Module: fsm_controller
+// Description:
+//   This module implements a finite state machine (FSM) to control the
+//   sequential execution of stages in the CNN processing pipeline.
+//   It coordinates the following stages: convolution, ReLU activation,
+//   pooling, flattening, dense layer, and argmax/UART transmission.
+//   The controller waits for each stage to signal completion (`*_done`),
+//   then issues a single-cycle start pulse (`*_start`) to the next stage.
+//   It ensures only one stage runs at a time, preventing overlap, and
+//   checks the UART transmission busy signal (`tx_busy`) to avoid early
+//   transmission. The pipeline begins when `frame_loaded` is asserted,
+//   and a busy flag indicates when processing is active.
+//----------------------------------------------------------------------
+
 
 module fsm_controller (
     input  logic clk, reset,

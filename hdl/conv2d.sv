@@ -1,5 +1,16 @@
 //======================================================================
-// conv2d.sv — 2-D convolution layer (BRAM streaming version, lint-clean) 
+// 2-D Convolution Layer (conv2d.sv)
+//----------------------------------------------------------------------
+// This module implements a 2-dimensional convolution layer for FPGA-based
+// neural network acceleration. It streams data from BRAM, applies a
+// convolution kernel to the input feature map, and outputs the result.
+//----------------------------------------------------------------------
+// Parameters:
+//   - Kernel size, input/output dimensions, stride, padding, etc.
+//----------------------------------------------------------------------
+// Features:
+//   - BRAM streaming for high-throughput data access
+//   - Supports various convolution configurations
 //======================================================================
 (* keep_hierarchy = "yes" *)
 module conv2d #(
@@ -61,7 +72,7 @@ module conv2d #(
     (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] W_rom [0:W_DEPTH-1];
     (* rom_style = "block", ram_style = "block" *) logic signed [DATA_WIDTH-1:0] B_rom [0:OUT_CHANNELS-1];
 
-    // --- NEW: lightweight linear weight addressing (replaces big index expr) ---
+    //lightweight linear weight addressing (replaces big index expr) ---
     localparam int            W_K2        = KERNEL*KERNEL;
     localparam int            W_OC_STRIDE = IN_CHANNELS*W_K2;                 // weights per output channel
     localparam int            W_AW        = (W_DEPTH<=1)?1:$clog2(W_DEPTH);
@@ -95,8 +106,7 @@ module conv2d #(
     `endif
     end
 
-    function automatic int lin3(input int ch, input int row, input int col,
-                                input int H,  input int W);
+    function automatic int lin3(input int ch, input int row, input int col, input int H,  input int W);
         return (ch*H + row)*W + col;
     endfunction
 
@@ -113,7 +123,8 @@ module conv2d #(
 
     always_ff @(posedge clk) begin
         if (reset) begin
-            state <= IDLE; done <= 1'b0;
+            state <= IDLE; 
+            done <= 1'b0;
             oc<=0; orow<=0; ocol<=0;
             ic<=0; kr<=0; kc<=0;
             acc <= '0;
@@ -121,7 +132,8 @@ module conv2d #(
             pix_valid_q <= 1'b0; 
             pix_valid_d <= 1'b0;
             prod_reg <= '0;
-            w_addr <= '0; w_base_oc <= '0;
+            w_addr <= '0; 
+            w_base_oc <= '0;
         end else begin
             done   <= 1'b0;
             if_en  <= 1'b0;
@@ -163,24 +175,25 @@ module conv2d #(
                     if (kc == KERNEL-1) begin
                         kc <= 0;
                         if (kr == KERNEL-1) begin
-                        kr <= 0;
-                        if (ic == IN_CHANNELS-1) state <= WRITE;
-                        else begin
-                            ic <= ic + 1;
+                            kr <= 0;
+                            if (ic == IN_CHANNELS-1) begin
+                                state <= WRITE;
+                            end else begin
+                                ic <= ic + 1;
+                                w_addr <= w_addr + w_addr_t'(1);
+                                state <= READ;
+                            end
+                        end else begin
+                            kr <= kr + 1;
                             w_addr <= w_addr + w_addr_t'(1);
                             state <= READ;
-                        end
-                    end else begin
-                        kr <= kr + 1;
-                        w_addr <= w_addr + w_addr_t'(1);
-                        state <= READ;
                         end
                     end else begin
                         kc <= kc + 1;
                         w_addr <= w_addr + w_addr_t'(1);
                         state <= READ;
                     end
-                    end
+              end
 
               WRITE: begin
                     logic signed [ACCW-1:0]       shifted;

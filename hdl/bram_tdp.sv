@@ -1,4 +1,12 @@
-// bram_tdp.sv : true dual port (both ports R/W), 1-cycle read latency
+//------------------------------------------------------------------------------
+// Module: bram_tdp
+// Description: 
+//   This module implements a true dual-port Block RAM (BRAM) with both ports 
+//   supporting independent read and write operations. Each port can access the 
+//   memory simultaneously, allowing concurrent read/write or write/write 
+//   operations. The design features a 1-cycle read latency, meaning data 
+//   requested for reading is available on the following clock cycle.
+//------------------------------------------------------------------------------
 module bram_tdp #(
   parameter int DW    = 16,
   parameter int DEPTH = 1024,

@@ -1,6 +1,72 @@
-//======================================================================
-// top_level.sv — CNN pipeline with BRAMs, lint-clean wiring
-//======================================================================
+/*==============================================================================
+ top_level.sv — High-level overview
+--------------------------------------------------------------------------------
+Purpose
+- Orchestrates a full inference pass for a small CNN on a 28×28 greyscale image.
+  Ingests pixels over UART, buffers them in BRAM, runs conv→ReLU→2×2 max-pool→
+  dense, selects the class with argmax, and transmits the predicted digit.
+
+External I/O
+- clk, reset          : global clock / synchronous reset
+- uart_rx_i / uart_tx_o : serial ingress/egress at BAUD_RATE (derived from CLK_FREQ_HZ)
+- predicted_digit[3:0]  : argmax result (0–9), valid when UART TX is triggered
+
+Dataflow (single-frame, staged)
+1) Ingress
+   - UART RX produces (rx_dv, rx_byte). A small LUT maps 8-bit [0..255] → signed
+     Qm.FRAC (DATA_WIDTH, FRAC_BITS). Bytes stream linearly into IFMAP BRAM in
+     row-major order; when 28×28 bytes arrive, `frame_loaded` pulses.
+2) Feature extraction
+   - conv2d reads IFMAP (Port B) and writes feature maps into CONV BRAM (Port B).
+   - ReLU runs in-place over CONV (read Port A, write Port B).
+   - MaxPool reads CONV (Port A) and writes pooled results to POOL BRAM (Port A).
+3) Classification
+   - dense reads POOL (Port B) in a simple HWC iteration while generating CHW
+     addresses via shift-add (no multiplies in the critical path to meet timing). Outputs
+     NUM_CLASSES logits.
+   - argmax scans logits and outputs `predicted_digit`.
+4) Egress
+   - By default, UART TX sends ASCII('0' + predicted_digit). Optional debug
+     streams can also emit input stats, byte echoes, dense taps, or logits.
+
+Memory topology (why three BRAMs)
+- IFMAP (sdp): UART-only writer + conv2d reader. Decouples ingress timing.
+- CONV  (tdp): true dual-port allows ReLU read-modify-write and concurrent
+  reading by Pool when scheduled. Central scratch for feature maps.
+- POOL  (sdp): Pool writer + Dense reader. Clean boundary between extraction
+  and classification.
+
+Control & arbitration
+- A small controller FSM sequences stages with start/done handshakes:
+  frame_loaded → conv → relu → pool → (flat marker) → dense → argmax/tx.
+- Per-stage *active* flags drive clean muxing of the shared CONV ports.
+- TX is triggered only when argmax is ready and UART is not busy.
+
+Addressing & timing choices
+- Linear 3D → 1D helpers return sized addresses (no width truncation warnings).
+- Dense consumes data in HWC order while addresses are CHW; constants for OS=14
+  and OS*OS=196 are implemented as shift-adds to keep logic shallow.
+- All BRAM reads are 1-cycle; modules explicitly pipeline around that latency.
+
+Debug & bring-up aids (compile-time switches)
+- IFMAP stats/echo, Dense input taps, and Logits dumps, each with a simple
+  UART framing header. A final TX mux prioritises active debug streams.
+- Simulation-only timing report prints per-stage cycle counts and a SW argmax.
+
+Configurability
+- Parameters expose numeric widths, image size, channel counts, and UART timing.
+- Weight/bias file paths switch between synth/sim variants via `SYNTHESIS`.
+
+Reliability notes
+- Synchronous reset returns all stages to a defined, lint-clean state.
+- Inputs to each stage are held stable while it runs; only one stage is active
+  at a time to simplify timing and avoid port conflicts.
+
+In short
+- This top-level module wires BRAM boundaries, schedules stages,
+  and keeps I/O, compute, and debug concerns separated so timing closure and
+  debugging on a small FPGA (e.g., Basys-3) remain straightforward.
+==============================================================================*/
 (* keep_hierarchy = "yes" *)
 module top_level #(
     parameter int DATA_WIDTH   = 16,

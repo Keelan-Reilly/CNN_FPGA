@@ -1,4 +1,13 @@
-// bram_sdp.sv : write port A, read port B (1-cycle read latency)
+//------------------------------------------------------------------------------
+// Module: bram_sdp
+// Description: 
+//   This module implements a simple dual-port Block RAM (BRAM) with separate
+//   write and read ports. Port A is dedicated for write operations, while
+//   Port B is used for read operations. The read port has a 1-cycle latency,
+//   meaning data becomes available one clock cycle after the read address is
+//   provided.
+//------------------------------------------------------------------------------
+
 module bram_sdp #(
   parameter int DW    = 16,
   parameter int DEPTH = 1024,

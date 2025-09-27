@@ -1,11 +1,23 @@
-//======================================================================
-// maxpool.sv — 2×2 Max-Pooling over BRAM, linear-pointer (fast) version
-//   • BRAM has 1-cycle read latency
-//   • We walk a single linear pointer conv_base through CHW layout:
-//       - next pooled column  : +2
-//       - next pooled row     : +(2*IN_SIZE - 2*(OUT_SIZE-1)) = IN_SIZE+2
-//       - next channel (wrap) : +(IN_SIZE+2) from last window of last row
-//======================================================================
+//------------------------------------------------------------------------------
+// 2×2 Max-Pooling Module Documentation
+//
+// This module implements a fast 2×2 max-pooling operation over data stored in
+// BRAM, optimized for FPGA deployment. The input data is organized in CHW
+// (Channel-Height-Width) layout. The module uses a single linear pointer
+// (conv_base) to traverse the input data efficiently.
+//
+// Key Features:
+//   - Assumes BRAM with 1-cycle read latency.
+//   - For each output pixel, the module reads a 2×2 window from the input and
+//     computes the maximum value.
+//   - The pointer increments as follows:
+//       • Next pooled column: +2
+//       • Next pooled row: +(2*IN_SIZE - 2*(OUT_SIZE-1)) = IN_SIZE+2
+//       • Next channel (wrap): +(IN_SIZE+2) from the last window of the last row
+//
+// This approach minimizes address calculation overhead and maximizes throughput
+// for pooling operations in convolutional neural network accelerators.
+//------------------------------------------------------------------------------
 (* keep_hierarchy = "yes" *)
 module maxpool #(
     parameter int DATA_WIDTH = 16,

@@ -1,24 +1,14 @@
-//======================================================================
-// argmax.sv — Find index of maximum value in a vector
-//----------------------------------------------------------------------
-// What this module does:
-//   • Takes a vector of DIM signed values.
-//   • Finds which index holds the largest value (argmax).
-//   • On `start`, it scans through the vector once and, when done,
-//     outputs the index of the maximum and pulses `done`.
-//
-// Key points:
-//   • Input:  vec[0..DIM-1] — signed values (fixed-point or integer).
-//   • Output: idx = index of the largest element.
-//   • Control: assert `start` while IDLE; `done` pulses when complete.
-//   • Uses a simple FSM to walk through the vector one element per cycle.
-//
-// How it runs internally:
-//   • IDLE   : Wait for `start`. Initialise "best value" = vec[0].
-//   • RUN    : For each element, compare with the current best; update
-//              best value/index if larger.
-//   • FINISH : Output the best index, pulse `done`, and return to IDLE.
-//======================================================================
+//------------------------------------------------------------------------------
+//  Argmax Module
+//  -------------
+//  This module scans a vector of signed values and determines the index of the
+//  maximum element (argmax). Upon receiving a start signal, it iterates through
+//  the input vector, compares each value, and tracks the largest value found.
+//  When the scan is complete, it outputs the index of the maximum value and
+//  pulses a 'done' signal to indicate completion. The design uses a simple
+//  finite state machine (FSM) to control the process, ensuring one comparison
+//  per clock cycle.
+//------------------------------------------------------------------------------
 
 (* keep_hierarchy = "yes" *)
 module argmax #(
@@ -39,15 +29,20 @@ module argmax #(
 
     always_ff @(posedge clk) begin
         if (reset) begin
-            state <= IDLE; done <= 1'b0; idx <= '0;
-            i <= 0; besti <= '0;
+            state <= IDLE; 
+            done <= 1'b0; 
+            idx <= '0;
+            i <= 0; 
+            besti <= '0;
             bestv <= $signed({1'b1, {(DATA_WIDTH-1){1'b0}}});
         end else begin
             case (state)
               IDLE: begin
                   done <= 1'b0;
                   if (start) begin
-                      i <= 1; besti <= '0; bestv <= vec[0];
+                      i <= 1; 
+                      besti <= '0; 
+                      bestv <= vec[0];
                       state <= RUN;
                   end
               end
