@@ -44,6 +44,7 @@ prediction results (digits 0–9).
 
 ## Simulation (Verilator)
 - tb/tb_full_pipeline.cpp — C++ testbench harness for Verilator; simulates full pipeline from input to UART output.
+- tb_testbench.sv  – Unit Testbenches for each HDL module
 - obj_dir/ — Verilator build output.
 
 ---
@@ -155,6 +156,7 @@ This CNN classifies 16×16 grayscale digit images using the following sequence o
 │  ├─ uart_sim.py            # simulates UART in Verilator
 │  └─ verify_fixed_point.py  # validate fixed-point correctness
 ├─ tb/
+|  ├─ tb_testbench.sv   # unit testbenches for each module
 │  └─ tb_full_pipeline.cpp   # C++ Verilator testbench
 ├─ Makefile
 ├─ .gitignore
