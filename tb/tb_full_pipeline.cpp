@@ -5,7 +5,7 @@
 // It reads a raw 28×28 image from file, sends it over UART (8N1 format) to the DUT,
 // waits for a UART response byte (ASCII-encoded digit), and prints/logs the result.
 //
-// Waveforms are dumped to wave.vcd for inspection in GTKWave.
+// Waveforms are dumped to wave.vcd for inspection in WaveTrace.
 // UART timing is cycle-accurate to match DUT’s CLKS_PER_BIT.
 //======================================================================
 
@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
 
     // UART bit timing: matches DUT's CLKS_PER_BIT
     const int BAUD_RATE = 115200;
-    const int CLK_FREQ = 100000000; // 50 MHz
+    const int CLK_FREQ = 100000000; // 100 MHz
     const int CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
 
     // Send all 784 bytes over UART

@@ -1,13 +1,24 @@
-//------------------------------------------------------------------------------
-//  Module: relu.sv
-//  Description:
-//    This module implements the ReLU (Rectified Linear Unit) activation function
-//    over data stored in BRAM. It operates in-place, meaning the input data in
-//    BRAM is overwritten with the activated output. The module reads each value
-//    from BRAM, applies the ReLU function (output = max(0, input)), and writes
-//    the result back to the same location. Designed to be lint-clean for
-//    integration into FPGA-based CNN accelerators.
-//------------------------------------------------------------------------------
+//======================================================================
+// Module: relu
+// Description:
+//   Implements the Rectified Linear Unit (ReLU) activation function.
+//
+//   Functionality:
+//   • Reads each activation value sequentially from BRAM.
+//   • Applies ReLU: output = max(0, input).
+//   • Writes the result back to the same BRAM address (in-place update).
+//   • Operates over a full CHW (Channel–Height–Width) feature map.
+//
+//   Key points:
+//   • Uses separate read and write ports of dual-port BRAM (read on A, write on B).
+//   • State machine pipelines READ → WRITE for every element.
+//   • Linearised addressing scheme (CHW → flat index).
+//   • Designed to be lint-clean and synthesis-friendly.
+//
+//   Use case:
+//   • Typically inserted after convolution or dense layers to introduce non-linearity
+//     in FPGA-based CNN accelerators.
+//======================================================================
 
 (* keep_hierarchy = "yes" *)
 module relu #(
@@ -18,33 +29,28 @@ module relu #(
     input  logic clk, reset, start,
 
     // CONV buffer BRAM Port A (read)
-    output logic [$clog2(CHANNELS*IMG_SIZE*IMG_SIZE)-1:0] conv_r_addr,
-    output logic                                           conv_r_en,
-    input  logic signed [DATA_WIDTH-1:0]                   conv_r_q,
+    output logic [$clog2(CHANNELS*IMG_SIZE*IMG_SIZE)-1:0] conv_r_addr,  // Address into input BRAM (CHW-linearised).
+    output logic                                           conv_r_en,   // Read enable
+    input  logic signed [DATA_WIDTH-1:0]                   conv_r_q,   // Data read
 
     // CONV buffer BRAM Port B (write back)
-    output logic [$clog2(CHANNELS*IMG_SIZE*IMG_SIZE)-1:0] conv_w_addr,
-    output logic                                           conv_w_en,
-    output logic                                           conv_w_we,
-    output logic signed [DATA_WIDTH-1:0]                   conv_w_d,
+    output logic [$clog2(CHANNELS*IMG_SIZE*IMG_SIZE)-1:0] conv_w_addr, // Address into output BRAM (CHW-linearised).
+    output logic                                           conv_w_en,  // Write enable
+    output logic                                           conv_w_we, // Write strobe. Check if this is necessary for BRAM
+    output logic signed [DATA_WIDTH-1:0]                   conv_w_d,  // Data to write
 
     output logic done
 );
-    localparam int H = IMG_SIZE, W = IMG_SIZE;
-    localparam int AW = $clog2(CHANNELS*IMG_SIZE*IMG_SIZE);
-    typedef logic [AW-1:0] addr_t;
-    addr_t addr;
+    localparam int H = IMG_SIZE, W = IMG_SIZE;                       // Height/Width of feature map   
+    localparam int AW = $clog2(CHANNELS*IMG_SIZE*IMG_SIZE);          // Address width for BRAM.  
+    typedef logic [AW-1:0] addr_t;                                   // Type for BRAM addresses
+    addr_t addr;                                                     // Linear address pointer through CHW space
 
     typedef enum logic [1:0] {IDLE, READ, WRITE, FINISH} st_t;
     st_t st;
 
-    integer ch, r, c;
-    logic signed [DATA_WIDTH-1:0] v_reg;
-
-    // Avoid VARHIDDEN by using _i names
-    function automatic int lin3(input int ch_i,input int row_i,input int col_i);
-        return (ch_i*H + row_i)*W + col_i;
-    endfunction
+    integer ch, r, c;                                               // Channel, row, col loop counters.
+    logic signed [DATA_WIDTH-1:0] v_reg;                            // Register to hold read value.         
 
     always_ff @(posedge clk) begin
       if (reset) begin
@@ -56,40 +62,41 @@ module relu #(
 
         unique case(st)
           IDLE: if (start) begin
-                  ch<=0; r<=0; c<=0;
-                  conv_r_addr <= addr;
-                  conv_r_en   <= 1'b1;
+                  ch<=0; r<=0; c<=0;      // Reset loop indices.
+                  conv_r_addr <= addr;    // Issue read for address 0.
+                  conv_r_en   <= 1'b1;    // Assert read enable.
                   st <= READ;
                 end
 
+          // Capture input value from BRAM.
           READ: begin
-                  v_reg <= conv_r_q;
-                  conv_w_addr <= conv_r_addr;
+                  v_reg <= conv_r_q;           // Register the value from BRAM.
+                  conv_w_addr <= conv_r_addr;  // Copy read address to write address (in-place).
                   st <= WRITE;
                 end
-
+          // Apply ReLU, write back, then increment indices.
           WRITE: begin
                   conv_w_en <= 1'b1; conv_w_we <= 1'b1;
-                  conv_w_d  <= v_reg[DATA_WIDTH-1] ? '0 : v_reg;
+                  conv_w_d  <= v_reg[DATA_WIDTH-1] ? '0 : v_reg;   // ReLU: if sign bit=1 (negative), write 0; else write value.
 
-                  if (c==W-1) begin
+                  if (c==W-1) begin                     // End of row
                     c<=0;
-                    if (r==H-1) begin
+                    if (r==H-1) begin                // End of image
                       r<=0;
-                      if (ch==CHANNELS-1) st<=FINISH;
+                      if (ch==CHANNELS-1) st<=FINISH;  // End of all channels
                       else begin
-                        ch<=ch+1;
-                        addr <= addr + 1;
-                        conv_r_addr <= addr + 1;
+                        ch<=ch+1;                     // Next channel
+                        addr <= addr + 1;             // Move to next address
+                        conv_r_addr <= addr + 1;      // Issue read for next address
                         conv_r_en<=1'b1; st<=READ;
                       end
-                    end else begin
+                    end else begin                  // Next row
                       r<=r+1;
-                      addr <= addr + 1;
+                      addr <= addr + 1; 
                       conv_r_addr <= addr + 1;
                       conv_r_en<=1'b1; st<=READ;
                     end
-                  end else begin
+                  end else begin                    // Next column
                     c<=c+1;
                     addr <= addr + 1;
                     conv_r_addr <= addr + 1;

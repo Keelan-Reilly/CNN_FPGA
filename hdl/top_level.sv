@@ -1,72 +1,33 @@
-/*==============================================================================
- top_level.sv — High-level overview
---------------------------------------------------------------------------------
-Purpose
-- Orchestrates a full inference pass for a small CNN on a 28×28 greyscale image.
-  Ingests pixels over UART, buffers them in BRAM, runs conv→ReLU→2×2 max-pool→
-  dense, selects the class with argmax, and transmits the predicted digit.
-
-External I/O
-- clk, reset          : global clock / synchronous reset
-- uart_rx_i / uart_tx_o : serial ingress/egress at BAUD_RATE (derived from CLK_FREQ_HZ)
-- predicted_digit[3:0]  : argmax result (0–9), valid when UART TX is triggered
-
-Dataflow (single-frame, staged)
-1) Ingress
-   - UART RX produces (rx_dv, rx_byte). A small LUT maps 8-bit [0..255] → signed
-     Qm.FRAC (DATA_WIDTH, FRAC_BITS). Bytes stream linearly into IFMAP BRAM in
-     row-major order; when 28×28 bytes arrive, `frame_loaded` pulses.
-2) Feature extraction
-   - conv2d reads IFMAP (Port B) and writes feature maps into CONV BRAM (Port B).
-   - ReLU runs in-place over CONV (read Port A, write Port B).
-   - MaxPool reads CONV (Port A) and writes pooled results to POOL BRAM (Port A).
-3) Classification
-   - dense reads POOL (Port B) in a simple HWC iteration while generating CHW
-     addresses via shift-add (no multiplies in the critical path to meet timing). Outputs
-     NUM_CLASSES logits.
-   - argmax scans logits and outputs `predicted_digit`.
-4) Egress
-   - By default, UART TX sends ASCII('0' + predicted_digit). Optional debug
-     streams can also emit input stats, byte echoes, dense taps, or logits.
-
-Memory topology (why three BRAMs)
-- IFMAP (sdp): UART-only writer + conv2d reader. Decouples ingress timing.
-- CONV  (tdp): true dual-port allows ReLU read-modify-write and concurrent
-  reading by Pool when scheduled. Central scratch for feature maps.
-- POOL  (sdp): Pool writer + Dense reader. Clean boundary between extraction
-  and classification.
-
-Control & arbitration
-- A small controller FSM sequences stages with start/done handshakes:
-  frame_loaded → conv → relu → pool → (flat marker) → dense → argmax/tx.
-- Per-stage *active* flags drive clean muxing of the shared CONV ports.
-- TX is triggered only when argmax is ready and UART is not busy.
-
-Addressing & timing choices
-- Linear 3D → 1D helpers return sized addresses (no width truncation warnings).
-- Dense consumes data in HWC order while addresses are CHW; constants for OS=14
-  and OS*OS=196 are implemented as shift-adds to keep logic shallow.
-- All BRAM reads are 1-cycle; modules explicitly pipeline around that latency.
-
-Debug & bring-up aids (compile-time switches)
-- IFMAP stats/echo, Dense input taps, and Logits dumps, each with a simple
-  UART framing header. A final TX mux prioritises active debug streams.
-- Simulation-only timing report prints per-stage cycle counts and a SW argmax.
-
-Configurability
-- Parameters expose numeric widths, image size, channel counts, and UART timing.
-- Weight/bias file paths switch between synth/sim variants via `SYNTHESIS`.
-
-Reliability notes
-- Synchronous reset returns all stages to a defined, lint-clean state.
-- Inputs to each stage are held stable while it runs; only one stage is active
-  at a time to simplify timing and avoid port conflicts.
-
-In short
-- This top-level module wires BRAM boundaries, schedules stages,
-  and keeps I/O, compute, and debug concerns separated so timing closure and
-  debugging on a small FPGA (e.g., Basys-3) remain straightforward.
-==============================================================================*/
+//======================================================================
+// Module: top_level
+// Description:
+//   Orchestrates a full single-frame inference for a small CNN on a
+//   28×28 grayscale image using UART I/O and BRAM-backed layers.
+//
+//   Functionality:
+//   • Ingests 28×28 bytes over UART RX and converts them to fixed-point,
+//     storing them into IFMAP BRAM.
+//   • Runs: conv2d → ReLU (in-place) → 2×2 max-pooling → dense.
+//   • Computes argmax over logits to obtain the predicted digit 0–9.
+//   • Transmits the prediction (and optional debug streams) over UART TX.
+//
+//   Memory topology:
+//   • IFMAP  (SDP): UART writer / conv reader.
+//   • CONV   (TDP): central scratch; ReLU read-modify-write and Pool reads.
+//   • POOL   (SDP): Pool writer / Dense reader.
+//
+//   Control:
+//   • A small controller FSM sequences stages via start/done handshakes.
+//   • Per-stage “active” flags mux shared BRAM ports cleanly.
+//   • All BRAM reads are 1-cycle; modules pipeline around that latency.
+//
+//   Debug (optional):
+//   • IFMAP statistics/echo, dense input taps, logits dump — streamed via UART.
+//
+//   Use case:
+//   • Fits small FPGAs (e.g., Basys-3). Keeps I/O, compute, and debug concerns
+//     separated for simple timing closure and bring-up.
+//======================================================================
 (* keep_hierarchy = "yes" *)
 module top_level #(
     parameter int DATA_WIDTH   = 16,
@@ -99,36 +60,38 @@ module top_level #(
 `endif
 
     // Geometry
-    localparam int IF_SZ  = IN_CHANNELS*IMG_SIZE*IMG_SIZE;         // 784
-    localparam int OF_SZ  = OUT_CHANNELS*IMG_SIZE*IMG_SIZE;        // 6272
-    localparam int POOLED = IMG_SIZE/2;                            // 14
-    localparam int PO_SZ  = OUT_CHANNELS*POOLED*POOLED;            // 1568
+    localparam int IF_SZ  = IN_CHANNELS*IMG_SIZE*IMG_SIZE;         // IFMAP elements (28*28*1=784).
+    localparam int OF_SZ  = OUT_CHANNELS*IMG_SIZE*IMG_SIZE;        // CONV buffer elements (8*28*28=6272).
+    localparam int POOLED = IMG_SIZE/2;                            // Pooled spatial size (28/2=14).
+    localparam int PO_SZ  = OUT_CHANNELS*POOLED*POOLED;            // POOL elements (8*14*14=1568).
 
-    localparam int IF_AW = $clog2(IF_SZ);
-    localparam int OF_AW = $clog2(OF_SZ);
-    localparam int PO_AW = $clog2(PO_SZ);
+    localparam int IF_AW = $clog2(IF_SZ);                          // Address width for IFMAP BRAM
+    localparam int OF_AW = $clog2(OF_SZ);                          // Address width for CONV BRAM
+    localparam int PO_AW = $clog2(PO_SZ);                          // Address width for POOL BRAM
 
     typedef logic [IF_AW-1:0] if_addr_t;
     typedef logic [OF_AW-1:0] of_addr_t;
 
     // UART RX: load pixels into IFMAP BRAM
-    logic       rx_dv;  logic [7:0] rx_byte;
-    uart_rx #(.CLKS_PER_BIT(CLKS_PER_BIT)) RX (
+    logic       rx_dv;  logic [7:0] rx_byte;                            // UART outputs: data valid + received byte.
+    uart_rx #(.CLKS_PER_BIT(CLKS_PER_BIT)) RX (                         // Instantiate UART receiver.
         .clk, .reset, .rx(uart_rx_i), .rx_dv(rx_dv), .rx_byte(rx_byte)
     );
 
-    // ---- 8-bit -> Q7 LUT: scales [0..255] -> Q7 fixed-point ----
-    logic signed [DATA_WIDTH-1:0] pix_q7_lut [0:255];
-    initial begin : init_pix_q7
+    // LUT to convert 8-bit pixel (0–255) to fixed-point Qm.n (DATA_WIDTH,FRAC_BITS)
+    logic signed [DATA_WIDTH-1:0] pix_q7_lut [0:255];   // Precomputed mapping from byte to fixed-point.
+    initial begin : init_pix_q7                         // Build LUT once at elaboration.
         integer k; 
         integer v;
         for (k = 0; k < 256; k++) begin
-            v = (k * (1 << FRAC_BITS) + 127) / 255;  // rounded
-            pix_q7_lut[k] = $signed(v[DATA_WIDTH-1:0]);
+            v = (k * (1 << FRAC_BITS) + 127) / 255;         // Scale to [0,1], round to nearest.
+            pix_q7_lut[k] = $signed(v[DATA_WIDTH-1:0]);     // Truncate to DATA_WIDTH, keep as signed.
         end
     end
 
-    // Address helpers returned in the right width (avoid trunc warns)
+    // Functions to compute linear indices into IFMAP and CONV BRAMs
+    // CHW layout: channel first, then height, then width.
+    // E.g., pixel (r,c) in channel ch is at index ((ch * H) + r) * W + c
     function automatic if_addr_t lin3_if(input int ch, input int row, input int col);
         return if_addr_t'(((ch*IMG_SIZE + row)*IMG_SIZE + col));
     endfunction
@@ -137,9 +100,9 @@ module top_level #(
         return of_addr_t'(((ch*IMG_SIZE + row)*IMG_SIZE + col));
     endfunction
 
-    // Frame loader
-    integer r, c;
-    logic frame_loaded;
+    // Frame loader: tracks incoming pixels and signals when full frame received
+    integer r, c;                                   // Incoming image row/col trackers.
+    logic frame_loaded;                             // Pulses when full 28×28 frame received.
     always_ff @(posedge clk) begin
         if (reset) begin
             r<=0; c<=0; frame_loaded<=1'b0;
@@ -158,13 +121,13 @@ module top_level #(
     end
 
     // -------- IFMAP debug: checksum + min/max + small snapshot of RX bytes --------
-    localparam bit DEBUG_IFMAP_STATS = 1'b0;       // set 0 to disable
-    localparam int DEBUG_IFMAP_ECHO_BYTES = 0;    // first N RX bytes to echo (0..128 ok)
+    localparam bit DEBUG_IFMAP_STATS = 1'b0;       // Enable runtime stats (sim/bring-up).
+    localparam int DEBUG_IFMAP_ECHO_BYTES = 0;     // Echo first N RX bytes (0 disables).
 
-    logic [31:0] if_sum;
-    logic [7:0]  if_min, if_max;
-    logic [7:0]  rx_snapshot   [0:DEBUG_IFMAP_ECHO_BYTES>0?DEBUG_IFMAP_ECHO_BYTES-1:0];
-    logic [$clog2((DEBUG_IFMAP_ECHO_BYTES>0)?DEBUG_IFMAP_ECHO_BYTES:1)-1:0] snap_idx;
+    logic [31:0] if_sum;                            // Running sum of bytes.
+    logic [7:0]  if_min, if_max;                    // Running min/max of bytes.
+    logic [7:0]  rx_snapshot   [0:DEBUG_IFMAP_ECHO_BYTES>0?DEBUG_IFMAP_ECHO_BYTES-1:0];   // Snapshot of first N RX bytes.
+    logic [$clog2((DEBUG_IFMAP_ECHO_BYTES>0)?DEBUG_IFMAP_ECHO_BYTES:1)-1:0] snap_idx;     // Snapshot index.
 
     // --- IFMAP stats & snapshot ---
     always_ff @(posedge clk) begin
@@ -176,13 +139,13 @@ module top_level #(
                 if_sum <= 32'd0; if_min <= 8'hFF; if_max <= 8'h00; snap_idx <= '0;
             end
             if (DEBUG_IFMAP_STATS) begin
-                if_sum <= if_sum + rx_byte;
-                if (rx_byte < if_min) if_min <= rx_byte;
-                if (rx_byte > if_max) if_max <= rx_byte;
+                if_sum <= if_sum + rx_byte;                     // Accumulate sum
+                if (rx_byte < if_min) if_min <= rx_byte;        // Track min
+                if (rx_byte > if_max) if_max <= rx_byte;        // Track max
             end
             if (DEBUG_IFMAP_ECHO_BYTES > 0 && snap_idx < DEBUG_IFMAP_ECHO_BYTES) begin
-                rx_snapshot[snap_idx] <= rx_byte;
-                snap_idx <= snap_idx + 1'b1;
+                rx_snapshot[snap_idx] <= rx_byte;               // Capture early bytes      
+                snap_idx <= snap_idx + 1'b1;                   // Increment snapshot index  
             end
         end
     end
@@ -190,33 +153,35 @@ module top_level #(
     // ---------------- BRAMs ----------------
 
     // IFMAP: UART writes (A), conv2d reads (B)
-    logic                 if_a_en, if_a_we;
-    logic [IF_AW-1:0]     if_a_addr;
-    logic signed [DATA_WIDTH-1:0] if_a_din;
-    logic                 if_b_en;
-    logic [IF_AW-1:0]     if_b_addr;
-    logic signed [DATA_WIDTH-1:0] if_b_q;
+    logic                 if_a_en, if_a_we;                 // IFMAP Port A controls.
+    logic [IF_AW-1:0]     if_a_addr;                        // IFMAP Port A address.
+    logic signed [DATA_WIDTH-1:0] if_a_din;                  // IFMAP Port A data in.
+    logic                 if_b_en;                          // IFMAP Port B enable (conv2d).
+    logic [IF_AW-1:0]     if_b_addr;                         // IFMAP Port B address (conv2d).
+    logic signed [DATA_WIDTH-1:0] if_b_q;                    // IFMAP Port B data out
 
-    assign if_a_en   = rx_dv;
-    assign if_a_we   = rx_dv;
-    assign if_a_addr = lin3_if(0, r, c);
-    assign if_a_din  = pix_q7_lut[rx_byte];
+    assign if_a_en   = rx_dv;                               // Write when a byte arrives.
+    assign if_a_we   = rx_dv;                               // Write enable when a byte arrives.
+    assign if_a_addr = lin3_if(0, r, c);                    // Linearised address for current (r,c).
+    assign if_a_din  = pix_q7_lut[rx_byte];                 // Quantised fixed-point pixel.
 
+    // uses simple dual port BRAM because no simultaneous read/write needed
     bram_sdp #(.DW(DATA_WIDTH), .DEPTH(IF_SZ)) ifmap_mem (
       .clk   (clk),
-      .a_en  (if_a_en), .a_we(if_a_we), .a_addr(if_a_addr), .a_din(if_a_din),
-      .b_en  (if_b_en), .b_addr(if_b_addr), .b_dout(if_b_q)
+      .a_en  (if_a_en), .a_we(if_a_we), .a_addr(if_a_addr), .a_din(if_a_din), // port A = UART writer
+      .b_en  (if_b_en), .b_addr(if_b_addr), .b_dout(if_b_q)                   // port B = conv reader
     );
 
-    // CONV buffer: Port A = reader (relu or pool), Port B = writer (conv or relu writeback)
-    logic                 convA_en;
-    logic [OF_AW-1:0]     convA_addr;
-    logic signed [DATA_WIDTH-1:0] convA_q;
+    // CONV buffer: conv2d writes (B), ReLU read-modify-write (A), maxpool reads (A)
+    logic                 convA_en;                        // CONV Port A enable (ReLU read, maxpool read).
+    logic [OF_AW-1:0]     convA_addr;                      // CONV Port A address (ReLU read, maxpool read).
+    logic signed [DATA_WIDTH-1:0] convA_q;                 // CONV Port A data out (ReLU read, maxpool read).
 
-    logic                 convB_en, convB_we;
-    logic [OF_AW-1:0]     convB_addr;
-    logic signed [DATA_WIDTH-1:0] convB_din, convB_q_unused;
+    logic                 convB_en, convB_we;                 // CONV Port B controls (conv2d write).   
+    logic [OF_AW-1:0]     convB_addr;                         // CONV Port B address (conv2d write).
+    logic signed [DATA_WIDTH-1:0] convB_din, convB_q_unused;  // CONV Port B data in/ unused data out
 
+    // True dual-port BRAM for CONV buffer.
     bram_tdp #(.DW(DATA_WIDTH), .DEPTH(OF_SZ)) conv_buf (
       .clk(clk),
       // Port A (read)
@@ -233,15 +198,16 @@ module top_level #(
       .b_dout(convB_q_unused) // tie off to silence PINCONNECTEMPTY
     );
 
-    // POOL buffer: Port A = pool writer, Port B = dense reader
-    logic                 poolA_en, poolA_we;
-    logic [PO_AW-1:0]     poolA_addr;
-    logic signed [DATA_WIDTH-1:0] poolA_din;
+    // POOL buffer: maxpool writes (A), dense reads (B)
+    logic                 poolA_en, poolA_we;                // POOL Port A controls (maxpool write).
+    logic [PO_AW-1:0]     poolA_addr;                       // POOL Port A address (maxpool write).
+    logic signed [DATA_WIDTH-1:0] poolA_din;               // POOL Port A data in (maxpool write).
 
-    logic                 poolB_en;
-    logic [PO_AW-1:0]     poolB_addr;
-    logic signed [DATA_WIDTH-1:0] poolB_q;
+    logic                 poolB_en;                         // POOL Port B enable (dense read).
+    logic [PO_AW-1:0]     poolB_addr;                       // POOL Port B address (dense read).
+    logic signed [DATA_WIDTH-1:0] poolB_q;                  // POOL Port B data out (dense read).
 
+    // Simple dual-port BRAM for POOL buffer
     bram_sdp #(.DW(DATA_WIDTH), .DEPTH(PO_SZ)) pool_mem (
       .clk   (clk),
       .a_en  (poolA_en), .a_we(poolA_we), .a_addr(poolA_addr), .a_din(poolA_din),
@@ -249,14 +215,15 @@ module top_level #(
     );
 
     // ---------------- CNN stages ----------------
-    logic conv_start, relu_start, pool_start, dense_start, tx_start;
-    logic conv_done,  relu_done,  pool_done,  dense_done;
-
+    logic conv_start, relu_start, pool_start, dense_start, tx_start;    // Stage start signals.
+    logic conv_done,  relu_done,  pool_done,  dense_done;               // Stage done signals.
+    
     // conv2d <-> IFMAP/CONV BRAM signals
-    logic [IF_AW-1:0] conv_if_addr;  logic conv_if_en;
-    logic [OF_AW-1:0] conv_w_addr;   logic conv_w_en;
-    logic             conv_w_we;
-    logic signed [DATA_WIDTH-1:0] conv_w_d;
+    logic [IF_AW-1:0] conv_if_addr;  logic conv_if_en;  // IFMAP read (B)
+    logic [OF_AW-1:0] conv_w_addr;   logic conv_w_en;   // CONV write (A)
+    logic             conv_w_we;                        // CONV write enable (A)
+    logic signed [DATA_WIDTH-1:0] conv_w_d;             // CONV write data (A)
+
 
     conv2d #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
@@ -276,9 +243,9 @@ module top_level #(
     );
 
     // ReLU in-place over CONV buffer (read A, write B)
-    logic [OF_AW-1:0] relu_r_addr; logic relu_r_en;
-    logic [OF_AW-1:0] relu_w_addr; logic relu_w_en, relu_w_we;
-    logic signed [DATA_WIDTH-1:0] relu_w_d;
+    logic [OF_AW-1:0] relu_r_addr; logic relu_r_en;               // ReLU reader controls (Port A).
+    logic [OF_AW-1:0] relu_w_addr; logic relu_w_en, relu_w_we;    // ReLU writer controls (Port B).
+    logic signed [DATA_WIDTH-1:0] relu_w_d;                       // ReLU write data (Port B).        
 
     relu #(
         .DATA_WIDTH(DATA_WIDTH), .CHANNELS(OUT_CHANNELS), .IMG_SIZE(IMG_SIZE)
@@ -290,7 +257,7 @@ module top_level #(
     );
 
     // MaxPool reads CONV buffer (A), writes POOL buffer (A)
-    logic [OF_AW-1:0] pool_conv_r_addr; logic pool_conv_r_en;
+    logic [OF_AW-1:0] pool_conv_r_addr; logic pool_conv_r_en;      // MaxPool CONV reader controls (Port A).
     maxpool #(
         .DATA_WIDTH(DATA_WIDTH), .CHANNELS(OUT_CHANNELS), .IN_SIZE(IMG_SIZE), .POOL(2)
     ) u_pool (
@@ -301,15 +268,15 @@ module top_level #(
     );
 
     // Flat done = 1-cycle delayed pool_done
-    logic flat_done_q;  wire flat_done = flat_done_q;
+    logic flat_done_q;  wire flat_done = flat_done_q;    // Align a 1-cycle delayed marker for controller.
     always_ff @(posedge clk) begin
         if (reset) flat_done_q <= 1'b0;
-        else       flat_done_q <= pool_done;
+        else       flat_done_q <= pool_done;            // Delay pool_done by one cycle.
     end
 
     // Dense reads POOL buffer (B), outputs logits
-    logic signed [DATA_WIDTH-1:0] logits [0:NUM_CLASSES-1];
-    logic [PO_AW-1:0] dense_in_addr; logic dense_in_en;
+    logic signed [DATA_WIDTH-1:0] logits [0:NUM_CLASSES-1];  // Dense output vector (logits).
+    logic [PO_AW-1:0] dense_in_addr; logic dense_in_en;      // Dense POOL reader controls (Port B).
 
     dense #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
@@ -323,11 +290,11 @@ module top_level #(
     );
 
     // Argmax
-    logic argmax_done;
-    localparam int IDXW = (NUM_CLASSES <= 1) ? 1 : $clog2(NUM_CLASSES);
+    logic argmax_done;                                                                  // Argmax done signal.
+    localparam int IDXW = (NUM_CLASSES <= 1) ? 1 : $clog2(NUM_CLASSES);                 // Argmax output index width.
     argmax #(.DATA_WIDTH(DATA_WIDTH), .DIM(NUM_CLASSES), .IDXW(IDXW)) u_argmax (
-        .clk, .reset, .start(dense_done),
-        .vec(logits), .idx(predicted_digit), .done(argmax_done)
+        .clk, .reset, .start(dense_done),                                               // Start when dense is done.
+        .vec(logits), .idx(predicted_digit), .done(argmax_done)                         // Output predicted digit 0–9.
     );
 
     // =================== UART TX & DEBUG STREAMS ===================
@@ -488,12 +455,12 @@ module top_level #(
     end
 
     // ------------- Final TX mux -------------
-    assign tx_dv   = tx_start | tx_dv_I | tx_dv_B | tx_dv_D | tx_dv_L;
-    assign tx_byte = tx_dv_I ? tx_byte_I :
+    assign tx_dv   = tx_start | tx_dv_I | tx_dv_B | tx_dv_D | tx_dv_L;   // Any stream or default digit drives TX
+    assign tx_byte = tx_dv_I ? tx_byte_I :                               // Priority: I > B > D > L > default digit
                     tx_dv_B ? tx_byte_B :
                     tx_dv_D ? tx_byte_D :
                     tx_dv_L ? tx_byte_L :
-                    (ASCII_0 + {4'b0000, predicted_digit});
+                    (ASCII_0 + {4'b0000, predicted_digit});              // Default: ASCII of predicted digit.
 
     uart_tx #(.CLKS_PER_BIT(CLKS_PER_BIT)) TX (
         .clk, .reset, .tx_dv(tx_dv), .tx_byte(tx_byte),
@@ -504,10 +471,10 @@ module top_level #(
     logic pipeline_busy;
     fsm_controller ctrl (
         .clk, .reset,
-        .frame_loaded(frame_loaded),
-        .conv_done, .relu_done, .pool_done, .flat_done, .dense_done,
+        .frame_loaded(frame_loaded),                                            //start condition from Uart RX
+        .conv_done, .relu_done, .pool_done, .flat_done, .dense_done,            //stage done signals
         .tx_ready, .tx_busy,
-        .conv_start, .relu_start, .pool_start, .dense_start, .tx_start,
+        .conv_start, .relu_start, .pool_start, .dense_start, .tx_start,         //stage start outputs
         .busy(pipeline_busy)
     );
 
@@ -552,14 +519,13 @@ module top_level #(
     assign poolB_en = dense_in_en;
 
     // ---------------- POOL BRAM Port B (dense reader) ----------------
-    // Drive BRAM addr in HWC order, but compute CHW-linear address with
-    // shift-add constants (OS=14 -> 14=16-2, OS*OS=196 -> 200-4).
+    // Drive BRAM addr in HWC order, but computes CHW-linear address with shift-add constants (OS=14 -> 14=16-2, OS*OS=196 -> 200-4).
     localparam int OS = POOLED;           // 14
-    localparam int C  = OUT_CHANNELS;     // 8
+    localparam int C  = OUT_CHANNELS;     // 8bu
 
     // Small counters that step only when dense asks for the next element
-    logic [$clog2(C)-1:0]  hwc_ch;
-    logic [$clog2(OS)-1:0] hwc_row, hwc_col;
+    logic [$clog2(C)-1:0]  hwc_ch;                          // HWC order channel
+    logic [$clog2(OS)-1:0] hwc_row, hwc_col;                // HWC order row, col
 
     always_ff @(posedge clk) begin
     if (reset) begin
@@ -584,7 +550,7 @@ module top_level #(
     end
     end
 
-    // CHW address = ch*(OS*OS) + row*OS + col
+    // CHW address = ch*(OS*OS) + row*OS + col, computed via shift-add to avoid multipliers.
     wire [PO_AW-1:0] addr_ch  = ( {hwc_ch,7'b0} + {hwc_ch,6'b0} + {hwc_ch,3'b0} ) - {hwc_ch,2'b0}; // 128+64+8-4 = 196
     wire [PO_AW-1:0] addr_row = ( {hwc_row,4'b0} ) - {hwc_row,1'b0};                                // 16-2 = 14
     assign poolB_addr = addr_ch + addr_row + PO_AW'(hwc_col);

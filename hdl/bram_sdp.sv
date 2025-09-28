@@ -11,14 +11,14 @@
 module bram_sdp #(
   parameter int DW    = 16,
   parameter int DEPTH = 1024,
-  parameter int AW    = (DEPTH<=1) ? 1 : $clog2(DEPTH)
+  parameter int AW    = (DEPTH<=1) ? 1 : $clog2(DEPTH) // AW = address width (bits needed to index DEPTH).
 )(
   input  logic                  clk,
   // Port A: write
   input  logic                  a_en,
   input  logic                  a_we,
-  input  logic [AW-1:0]         a_addr,
-  input  logic signed [DW-1:0]  a_din,
+  input  logic [AW-1:0]         a_addr,  //write address
+  input  logic signed [DW-1:0]  a_din,   //write data
   // Port B: read
   input  logic                  b_en,
   input  logic [AW-1:0]         b_addr,
@@ -27,7 +27,7 @@ module bram_sdp #(
   (* ram_style="block" *) logic signed [DW-1:0] mem [0:DEPTH-1];
 
   always_ff @(posedge clk) begin
-    if (a_en && a_we) mem[a_addr] <= a_din;
+    if (a_en && a_we) mem[a_addr] <= a_din; //write data into memory
   end
   always_ff @(posedge clk) begin
     if (b_en) b_dout <= mem[b_addr];
