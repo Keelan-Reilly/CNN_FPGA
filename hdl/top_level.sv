@@ -120,36 +120,6 @@ module top_level #(
         end
     end
 
-    // -------- IFMAP debug: checksum + min/max + small snapshot of RX bytes --------
-    localparam bit DEBUG_IFMAP_STATS = 1'b0;       // Enable runtime stats (sim/bring-up).
-    localparam int DEBUG_IFMAP_ECHO_BYTES = 0;     // Echo first N RX bytes (0 disables).
-
-    logic [31:0] if_sum;                            // Running sum of bytes.
-    logic [7:0]  if_min, if_max;                    // Running min/max of bytes.
-    logic [7:0]  rx_snapshot   [0:DEBUG_IFMAP_ECHO_BYTES>0?DEBUG_IFMAP_ECHO_BYTES-1:0];   // Snapshot of first N RX bytes.
-    logic [$clog2((DEBUG_IFMAP_ECHO_BYTES>0)?DEBUG_IFMAP_ECHO_BYTES:1)-1:0] snap_idx;     // Snapshot index.
-
-    // --- IFMAP stats & snapshot ---
-    always_ff @(posedge clk) begin
-        if (reset) begin
-            if_sum <= 32'd0; if_min <= 8'hFF; if_max <= 8'h00; snap_idx <= '0;
-        end else if (rx_dv) begin
-            // Start-of-frame detection: first byte of 28x28
-            if (r==0 && c==0) begin
-                if_sum <= 32'd0; if_min <= 8'hFF; if_max <= 8'h00; snap_idx <= '0;
-            end
-            if (DEBUG_IFMAP_STATS) begin
-                if_sum <= if_sum + rx_byte;                     // Accumulate sum
-                if (rx_byte < if_min) if_min <= rx_byte;        // Track min
-                if (rx_byte > if_max) if_max <= rx_byte;        // Track max
-            end
-            if (DEBUG_IFMAP_ECHO_BYTES > 0 && snap_idx < DEBUG_IFMAP_ECHO_BYTES) begin
-                rx_snapshot[snap_idx] <= rx_byte;               // Capture early bytes      
-                snap_idx <= snap_idx + 1'b1;                   // Increment snapshot index  
-            end
-        end
-    end
-
     // ---------------- BRAMs ----------------
 
     // IFMAP: UART writes (A), conv2d reads (B)
@@ -398,38 +368,6 @@ module top_level #(
     wire [PO_AW-1:0] addr_ch  = ( {hwc_ch,7'b0} + {hwc_ch,6'b0} + {hwc_ch,3'b0} ) - {hwc_ch,2'b0}; // 128+64+8-4 = 196
     wire [PO_AW-1:0] addr_row = ( {hwc_row,4'b0} ) - {hwc_row,1'b0};                                // 16-2 = 14
     assign poolB_addr = addr_ch + addr_row + PO_AW'(hwc_col);
-
-    // -------- DENSE tap: capture first N (addr,data) reads from POOL BRAM --------
-    localparam bit DEBUG_DENSE_TAP = 1'b0;     // set 0 to disable
-    localparam int D_TAP_N = 16;
-
-    logic                     d_in_en_q;
-    logic [PO_AW-1:0]         poolB_addr_q;    // address issued on previous cycle
-    logic [$clog2(D_TAP_N):0] d_tap_cnt;
-    logic [PO_AW-1:0]         d_tap_addr [0:D_TAP_N-1];
-    logic signed [DATA_WIDTH-1:0] d_tap_data [0:D_TAP_N-1];
-
-    always_ff @(posedge clk) begin
-    if (reset) begin
-        d_in_en_q   <= 1'b0;
-        poolB_addr_q<= '0;
-        d_tap_cnt   <= '0;
-    end else begin
-        d_in_en_q <= dense_in_en;
-        if (dense_start) d_tap_cnt <= '0;
-
-        // issue address registered last cycle
-        if (dense_in_en) poolB_addr_q <= poolB_addr;
-
-        // capture (addr,data) when previous cycle requested a read
-        if (DEBUG_DENSE_TAP && d_in_en_q && (d_tap_cnt < D_TAP_N)) begin
-        d_tap_addr[d_tap_cnt] <= poolB_addr_q;
-        d_tap_data[d_tap_cnt] <= poolB_q;      // 1-cycle latency data
-        d_tap_cnt             <= d_tap_cnt + 1'b1;
-        end
-    end
-    end
-
 
 `ifndef SYNTHESIS
     // ---------------- Performance (sim only) ----------------
