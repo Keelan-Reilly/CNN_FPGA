@@ -25,7 +25,7 @@
 (* keep_hierarchy = "yes" *)
 module conv2d #(
     parameter int DATA_WIDTH   = 16,  // Bit width for activations/weights (fixed-point).
-    parameter int FRAC_BITS    = 7,   // Number of fractional bits (for Q format; used on bias shift and output descaling).
+    parameter int FRAC_BITS    = 0,   // Number of fractional bits (for Q format; used on bias shift and output descaling).
     parameter int IN_CHANNELS  = 1,   // Number of input feature map channels.
     parameter int OUT_CHANNELS = 8,   // Number of output channels (number of kernels/filters).
     parameter int KERNEL       = 3,   // Kernel size (KERNEL x KERNEL).
@@ -63,7 +63,7 @@ module conv2d #(
     // Accumulator headroom
     localparam int ACCW = DATA_WIDTH*2 + $clog2(KERNEL*KERNEL*IN_CHANNELS) + 2;  // Width of accumulator: product width + growth for sum of (K^2 * Cin) terms + margin.
 
-    typedef enum logic [2:0] {IDLE, READ, PROD, ACCUM, WRITE, FINISH} state_t;
+    typedef enum logic [2:0] {IDLE, READ, WAIT, PROD, ACCUM, FINISH} state_t;
     state_t state;
 
     integer oc, orow, ocol;  // Loop counters: output channel, output row, output col.
@@ -131,13 +131,16 @@ module conv2d #(
 
     // BRAM read pipeline helpers
     logic signed [DATA_WIDTH-1:0] if_q_q;  // Registered version of if_q (1-cycle delayed sample).
-    logic pix_valid_q, pix_valid_q1;       // Valid flags delayed to match if_q_q timing.
+    logic pix_valid_q, pix_valid_q1, pix_valid_q2;       // Valid flags delayed to match if_q_q timing.
 
     logic signed [2*DATA_WIDTH-1:0] prod_reg;  // Registered product (for debug/waves).
     logic signed [DATA_WIDTH-1:0] weight_reg;  // Registered weight before multiply.
 
     logic signed [DATA_WIDTH-1:0] weight_q;    // Weight registered into the PROD stage.
     integer ir, icc;                           // Current input row/col (for padding check). 
+    logic signed [ACCW-1:0]       shifted;  // shifted accumulator
+    logic signed [DATA_WIDTH-1:0] res;      // Final clamped result at DATA_WIDTH.
+    logic signed [2*DATA_WIDTH-1:0] prod_now_local;
 
     // debug counter
     int cyc;
@@ -193,13 +196,19 @@ module conv2d #(
                     if (cyc < 200) $display("[%0t][READ ] oc=%0d r=%0d c=%0d ic=%0d kr=%0d kc=%0d v=%0b if_addr=%0d w_addr=%0d w_now=%0d",
                                             $time, oc, orow, ocol, ic, kr, kc, pix_valid_q,
                                             if_addr, w_addr, W_rom[w_addr]);
-                    state <= PROD;
+                    state <= WAIT;
                   end
+
+              // 3) WAIT: just advance the valid pipeline one stage
+              WAIT: begin
+                pix_valid_q1 <= pix_valid_q;
+                state <= PROD;
+              end
               // align BRAM data with weight into regs for multiply
               PROD: begin : dbg_prod
                     if_q_q       <= if_q;         // Capture IFMAP data arriving from prior READ.
                     weight_q     <= weight_reg;   // Move weight into multiply stage register.
-                    pix_valid_q1 <= pix_valid_q;  // Pipeline the valid bit to align with if_q_q, weight_q.
+                    pix_valid_q2 <= pix_valid_q1;  // Pipeline the valid bit to align with if_q_q, weight_q.
                     // TAP: show what was just latched
                     if (cyc < 200) $display("[%0t][PROD ] latched: v1=%0b if_q_q=%0d w_q=%0d (raw if_q=%0d w_reg=%0d)",
                           $time, pix_valid_q1, if_q_q, weight_q, if_q, weight_reg);
@@ -210,8 +219,7 @@ module conv2d #(
               // This is the convolution step; multiplies input pixel by weight and sums into accumulator.
               ACCUM: begin : dbg_accum
                     // product for *this* tap
-                    logic signed [2*DATA_WIDTH-1:0] prod_now_local;
-                    prod_now_local = (pix_valid_q1 ? if_q_q : '0) * weight_q; // Multiply if valid; else multiply 0 (implements zero-padding).
+                    prod_now_local = (pix_valid_q2 ? if_q_q : '0) * weight_q; // Multiply if valid; else multiply 0 (implements zero-padding).
 
                     // Sign-extend product to ACCW and add to accumulator.
                     acc <= acc + {{(ACCW-2*DATA_WIDTH){prod_now_local[2*DATA_WIDTH-1]}}, prod_now_local};
@@ -227,73 +235,67 @@ module conv2d #(
                         if (kr == KERNEL-1) begin
                             kr <= 0;
                             if (ic == IN_CHANNELS-1) begin
-                                state <= WRITE;             // Done all taps for this output pixel; go write result.
+                                // Done all taps for this output pixel; WRITE HERE instead of separate state
+                                // Use the CURRENT acc value (before the update on this cycle takes effect)
+                                shifted = acc + {{(ACCW-2*DATA_WIDTH){prod_now_local[2*DATA_WIDTH-1]}}, prod_now_local}; // This is what acc will be after this cycle
+                                shifted = shifted >>> FRAC_BITS;
+                                if      (shifted > S_MAXX) res = S_MAX;
+                                else if (shifted < S_MINX) res = S_MIN;
+                                else                       res = shifted[DATA_WIDTH-1:0];
+
+                                conv_addr <= of_addr_t'( lin3(oc, orow, ocol, HEIGHT, WIDTH) );
+                                conv_d    <= res;
+                                conv_en   <= 1'b1;
+                                conv_we   <= 1'b1;
+
+                                if (cyc < 400) $display("[%0t][WRITE] oc=%0d r=%0d c=%0d -> conv_addr=%0d conv_d=%0d acc=%0d",
+                                      $time, oc, orow, ocol, conv_addr, res, acc + {{(ACCW-2*DATA_WIDTH){prod_now_local[2*DATA_WIDTH-1]}}, prod_now_local});
+
+                                // Advance output indices and prep next accumulation
+                                if (ocol == WIDTH-1) begin
+                                    ocol <= 0;
+                                    if (orow == HEIGHT-1) begin
+                                        orow <= 0;
+                                        if (oc == OUT_CHANNELS-1) begin
+                                            state <= FINISH;
+                                        end else begin
+                                            oc  <= oc + 1;
+                                            ic<=0; kr<=0; kc<=0;
+                                            acc <= bias_ext(B_rom[oc+1]);
+                                            w_base_oc <= w_base_oc + w_addr_t'(W_OC_STRIDE);
+                                            w_addr    <= w_base_oc + w_addr_t'(W_OC_STRIDE);
+                                            state <= READ;
+                                        end
+                                    end else begin
+                                        orow <= orow + 1;
+                                        ic<=0; kr<=0; kc<=0;
+                                        acc <= bias_ext(B_rom[oc]);
+                                        w_addr <= w_base_oc;
+                                        state <= READ;
+                                    end
+                                end else begin
+                                    ocol <= ocol + 1;
+                                    ic<=0; kr<=0; kc<=0;
+                                    acc <= bias_ext(B_rom[oc]);
+                                    w_addr <= w_base_oc;
+                                    state <= READ;
+                                end
                             end else begin
-                                ic <= ic + 1;    // Next input channel
-                                w_addr <= w_addr + w_addr_t'(1); // advance weight address
-                                state <= READ;           // Start next tap read
-                            end
-                        end else begin
-                            kr <= kr + 1;    // Next kernel row
-                            w_addr <= w_addr + w_addr_t'(1); // advance weight address
-                            state <= READ;           // Start next tap read
-                        end
-                    end else begin
-                        kc <= kc + 1;  // Next kernel col
-                        w_addr <= w_addr + w_addr_t'(1); // advance weight address
-                        state <= READ;
-                    end
-              end
-
-              // Write accumulated result to output BRAM with saturation and descaling; advance output indices.
-              WRITE: begin : dbg_write
-                    logic signed [ACCW-1:0]       shifted;  // shifted accumulator
-                    logic signed [DATA_WIDTH-1:0] res;      // Final clamped result at DATA_WIDTH.
-
-                    shifted = acc >>> FRAC_BITS;            // right shift to undo fixed-point accumulation scaling
-                    if      (shifted > S_MAXX) res <= S_MAX;  // Clamp to max if overflow
-                    else if (shifted < S_MINX) res <= S_MIN;  // Clamp to min if underflow
-                    else                       res <= shifted[DATA_WIDTH-1:0];  // Take lower DATA_WIDTH bits if in range
-
-                    conv_addr <= of_addr_t'( lin3(oc, orow, ocol, HEIGHT, WIDTH) );  // Compute output address
-                    conv_d    <= res;                   // Data to write
-                    conv_en   <= 1'b1; 
-                    conv_we   <= 1'b1;
-
-                    if (cyc < 400) $display("[%0t][WRITE] oc=%0d r=%0d c=%0d -> conv_addr=%0d conv_d=%0d acc=%0d",
-                          $time, oc, orow, ocol, conv_addr, conv_d, acc);
-
-                    // Advance output indices and prep next accumulation
-                    if (ocol == WIDTH-1) begin
-                        ocol <= 0;
-                        if (orow == HEIGHT-1) begin
-                            orow <= 0;
-                            if (oc == OUT_CHANNELS-1) begin
-                                state <= FINISH;
-                            end else begin
-                                oc  <= oc + 1;
-                                ic<=0; kr<=0; kc<=0;
-                                acc <= bias_ext(B_rom[oc+1]);                     // Load bias for next output channel
-                                w_base_oc <= w_base_oc + w_addr_t'(W_OC_STRIDE);  // Advance base by one oc stride (skip current block).
-                                w_addr    <= w_base_oc + w_addr_t'(W_OC_STRIDE);  // Set w_addr to start of next oc block
+                                ic <= ic + 1;
+                                w_addr <= w_addr + w_addr_t'(1);
                                 state <= READ;
-
                             end
                         end else begin
-                            orow <= orow + 1;            // Next output row
-                            ic<=0; kr<=0; kc<=0;         // Reset input coords
-                            acc <= bias_ext(B_rom[oc]);  // Re-seed acc with same oc bias for new pixel.
-                            w_addr <= w_base_oc;         // reset to start of current oc weights
+                            kr <= kr + 1;
+                            w_addr <= w_addr + w_addr_t'(1);
                             state <= READ;
                         end
                     end else begin
-                        ocol <= ocol + 1;           // Next output column
-                        ic<=0; kr<=0; kc<=0;        // Reset inner loops for pixel
-                        acc <= bias_ext(B_rom[oc]); // Re-seed acc with same oc bias for new pixel.
-                        w_addr <= w_base_oc;        // reset to start of current oc weights
+                        kc <= kc + 1;
+                        w_addr <= w_addr + w_addr_t'(1);
                         state <= READ;
                     end
-                  end
+              end
 
               FINISH: begin
                     done  <= 1'b1;

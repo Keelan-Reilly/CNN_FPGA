@@ -79,7 +79,7 @@ module tb_conv2d;
 
   logic signed [DATA_WIDTH-1:0] ofmem [0:OF_SZ-1];
 
-  always_ff @(negedge clk) begin
+  always_ff @(posedge clk) begin
     if (conv_en && conv_we) ofmem[conv_addr] <= conv_d;
   end
 
@@ -112,28 +112,26 @@ module tb_conv2d;
     return (ch*HH + r)*WW + c;
   endfunction
 
-  // Golden compute (same padding = 0)
+  // ---- GOLDEN compute & print (time 0) ----
   logic signed [DATA_WIDTH-1:0] gold [0:OF_SZ-1];
   initial begin
     automatic int pad=(K-1)/2;
+    #1; // let ifmem init
     for (int r=0;r<H;r++) begin
       for (int c=0;c<W;c++) begin
         int acc=0;
-        for (int kr=0;kr<K;kr++) begin
-          for (int kc=0;kc<K;kc++) begin
-            int ir = r + kr - pad;
-            int ic = c + kc - pad;
-            if (ir>=0 && ir<H && ic>=0 && ic<W) begin
-              logic signed [DATA_WIDTH-1:0] a = ifmem[lin3(0,ir,ic,H,W)];
-              acc += a; // kernel is all ones
-            end
-          end
+        for (int kr=0;kr<K;kr++) for (int kc=0;kc<K;kc++) begin
+          int ir = r + kr - pad;
+          int ic = c + kc - pad;
+          if (ir>=0 && ir<H && ic>=0 && ic<W)
+            acc += ifmem[lin3(0,ir,ic,H,W)];
         end
         /* verilator lint_off WIDTHTRUNC */
-        gold[lin3(0,r,c,H,W)] = $signed(acc); // narrow 32->16 intentionally
+        gold[lin3(0,r,c,H,W)] = $signed(acc);
         /* verilator lint_on  WIDTHTRUNC */
       end
     end
+    dump_matrix("GOLDEN REF", gold);
   end
 
   // Test sequence
@@ -158,6 +156,10 @@ module tb_conv2d;
       $finish;
     end
 
+    // >>> Print the DUT output now that it's complete <<<
+    dump_matrix("HW OUTPUT", ofmem);
+
+
     // Compare all pixels
     errs = 0;
     for (int r=0;r<H;r++) begin
@@ -176,4 +178,23 @@ module tb_conv2d;
     repeat (5) @(posedge clk); // give tracer a couple cycles
     $finish;
   end
+
+  task automatic dump_matrix
+  (
+    input string tag,
+    input logic signed [DATA_WIDTH-1:0] arr [0:OF_SZ-1]
+  );
+    $display("\n--- %s ---", tag);
+    for (int r=0; r<H; r++) begin
+      string line = "";
+      for (int c=0; c<W; c++) begin
+        int idx = lin3(0,r,c,H,W);
+        line = {line, $sformatf("%0d%s", arr[idx], (c==W-1) ? "" : " ")};
+      end
+      $display("%s", line);
+    end
+    $display("--- end %s ---\n", tag);
+  endtask
+
+
 endmodule
