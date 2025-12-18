@@ -42,13 +42,19 @@
 //     - Capture the BRAM output (if_q) into if_q_q (now valid).
 //     - Advance pix_valid so (if_q_q, weight_q, pix_valid_q3) align.
 //
-//   ACCUM
-//     - Compute product for this tap:
-//         prod = (pix_valid ? if_q_q : 0) * weight_q
-//       then sign-extend to ACCW and accumulate.
-//     - Advance kc/kr/ic (and w_addr) to the next tap.
-//     - On the final tap of the pixel, compute the final scaled/clamped
-//       result and stage it (res_q + conv_addr_q) for a clean 1-cycle write.
+//   ACCUM_MUL
+//     - DSP multiply stage (registered):
+//         prod_now = (pix_valid ? if_q_q : 0) * weight_q
+//       then sign-extend to ACCW and register into prod_ext_q.
+//     - This extra stage breaks the long MAC path so timing closes on FPGA.
+//
+//   ACCUM_ADD
+//     - Accumulate the registered product:
+//         acc <= acc + prod_ext_q
+//     - On final tap of the output pixel:
+//         shifted = (acc + prod_ext_q) >>> FRAC_BITS
+//       then saturate/clamp to DATA_WIDTH and stage (res_q + conv_addr_q)
+//       for a clean 1-cycle write.
 //
 //   WRITE
 //     - Drive conv_addr/conv_d and assert conv_en/conv_we for exactly one
@@ -63,7 +69,7 @@
 // Why WAIT/PROD/CAP exist
 //   A synchronous 1R BRAM returns data one cycle after the address/en is
 //   asserted. By explicitly staging:
-//     READ  -> WAIT -> PROD -> CAP -> ACCUM
+//     READ  -> WAIT -> PROD -> CAP -> ACCUM_*
 //   we guarantee the tap’s (data, weight, valid) are time-aligned when the
 //   multiply-accumulate occurs, even when taps are invalid (padding).
 //
@@ -71,8 +77,8 @@
 //   • Padding: out-of-bounds taps are treated as zero via pix_valid gating.
 //   • Scaling: bias is pre-shifted by FRAC_BITS; the final accumulator is
 //     right-shifted by FRAC_BITS before saturation/clamping to DATA_WIDTH.
-//   • Throughput: one tap per cycle; latency per output pixel is
-//     (Cin*K*K) * pipeline_depth + write overhead.
+//   • Throughput: one tap per cycle (plus one extra MUL stage);
+//     latency per output pixel ≈ (Cin*K*K) * pipeline_depth + write overhead.
 //======================================================================
 (* keep_hierarchy = "yes" *)
 module conv2d #(
@@ -121,12 +127,17 @@ module conv2d #(
     localparam int ACCW = DATA_WIDTH*2 + $clog2(KERNEL*KERNEL*IN_CHANNELS) + 2;
 
     // --------------------------- FSM enum ----------------------------
-    typedef enum logic [2:0] {IDLE, READ, WAIT, PROD, CAP, ACCUM, WRITE, FINISH} state_t;
+    // NOTE: We add ACCUM_MUL + ACCUM_ADD, so widen enum to 4 bits.
+    typedef enum logic [3:0] {
+        IDLE, READ, WAIT, PROD, CAP,
+        ACCUM_MUL, ACCUM_ADD,
+        WRITE, FINISH
+    } state_t;
     state_t state;
 
     // ------------------------- Loop counters -------------------------
-    integer oc, orow, ocol;
-    integer ic, kr, kc;
+    integer oc, orow, ocol;   // output channel / row / col
+    integer ic, kr, kc;       // input channel / kernel row / kernel col
 
     // ----------------------- Accumulator / MAC -----------------------
     (* use_dsp = "yes" *) logic signed [ACCW-1:0] acc;
@@ -148,31 +159,37 @@ module conv2d #(
     localparam int           W_AW        = (W_DEPTH<=1)? 1 : $clog2(W_DEPTH);
     typedef logic [W_AW-1:0] w_addr_t;
 
-    w_addr_t w_addr;
-    w_addr_t w_base_oc;
+    w_addr_t w_addr;     // current weight addr for this tap
+    w_addr_t w_base_oc;  // base weight addr for current output channel (oc)
 
     // ---------------------------- Helpers ----------------------------
     function automatic int lin3(input int ch, input int row, input int col, input int H, input int W);
         return (ch*H + row)*W + col;
     endfunction
 
+    // Bias is treated as fixed-point with FRAC_BITS fractional bits;
+    // we pre-shift it into accumulator scale.
     function automatic logic signed [ACCW-1:0] bias_ext(input logic signed [DATA_WIDTH-1:0] b);
         return $signed({{(ACCW-DATA_WIDTH){b[DATA_WIDTH-1]}}, b}) <<< FRAC_BITS;
     endfunction
 
     // --------------- Pipeline regs to align data/weight/valid --------
+    // pix_valid_* tracks padding validity through the pipeline.
     logic                         pix_valid_q, pix_valid_q1, pix_valid_q2, pix_valid_q3;
+
+    // if_q_q captures BRAM return data; weight_reg captures ROM read; weight_q is MAC-stage weight.
     logic signed [DATA_WIDTH-1:0] if_q_q;
     logic signed [DATA_WIDTH-1:0] weight_reg;
     logic signed [DATA_WIDTH-1:0] weight_q;
 
     // -------------------- Tail-flush write staging -------------------
-    logic   signed [DATA_WIDTH-1:0] res_q;
-    of_addr_t                       conv_addr_q;
+    // res_q and conv_addr_q are staged so WRITE can assert a clean 1-cycle strobe.
+    logic    signed [DATA_WIDTH-1:0] res_q;
+    of_addr_t                        conv_addr_q;
 
-    // -------------------- Scratch for product/extend -----------------
-    logic signed [2*DATA_WIDTH-1:0] prod_now;
-    logic signed [ACCW-1:0]         prod_ext;
+    // -------------------- Product pipeline reg (NEW) -----------------
+    // Registering prod_ext breaks the long path (mul+add+shift+saturate).
+    logic signed [ACCW-1:0] prod_ext_q;
 
     // --------------------- ROM file loading (sim) --------------------
     initial begin
@@ -224,8 +241,10 @@ module conv2d #(
             res_q       <= '0;
             conv_addr_q <= '0;
 
+            prod_ext_q  <= '0;
+
         end else begin
-            // default strobes
+            // default strobes (pulse-only outputs)
             done    <= 1'b0;
             if_en   <= 1'b0;
             conv_en <= 1'b0;
@@ -233,6 +252,9 @@ module conv2d #(
 
             unique case (state)
 
+              // ---------------------------------------------------------
+              // IDLE: wait for start pulse, init counters + accumulator
+              // ---------------------------------------------------------
               IDLE: if (start) begin
                         oc<=0; orow<=0; ocol<=0;
                         ic<=0; kr<=0; kc<=0;
@@ -244,6 +266,10 @@ module conv2d #(
                         state <= READ;
                     end
 
+              // ---------------------------------------------------------
+              // READ: compute tap coordinates, issue BRAM read if valid,
+              //       and read corresponding weight.
+              // ---------------------------------------------------------
               READ: begin
                     int   ir   = orow + kr - PAD;
                     int   icol = ocol + kc - PAD;
@@ -261,6 +287,10 @@ module conv2d #(
                     state <= WAIT;
               end
 
+              // ---------------------------------------------------------
+              // WAIT/PROD/CAP: explicit alignment pipeline so that
+              // (if_q_q, weight_q, pix_valid_q3) correspond to same tap.
+              // ---------------------------------------------------------
               WAIT: begin
                     pix_valid_q1 <= pix_valid_q;
                     state <= PROD;
@@ -275,45 +305,77 @@ module conv2d #(
               CAP: begin
                     if_q_q       <= if_q;
                     pix_valid_q3 <= pix_valid_q2;
-                    state <= ACCUM;
+                    state <= ACCUM_MUL;
               end
 
-              ACCUM: begin
+              // ---------------------------------------------------------
+              // ACCUM_MUL: DSP multiply stage (registered).
+              // Splitting MUL and ADD improves FPGA timing closure.
+              // ---------------------------------------------------------
+              ACCUM_MUL: begin
+                    logic signed [2*DATA_WIDTH-1:0] prod_now;
+                    logic signed [ACCW-1:0]         prod_ext;
+
                     prod_now = (pix_valid_q3 ? if_q_q : '0) * weight_q;
                     prod_ext = {{(ACCW-2*DATA_WIDTH){prod_now[2*DATA_WIDTH-1]}}, prod_now};
-                    acc <= acc + prod_ext;
 
-                    if (kc == KERNEL-1) begin
-                        kc <= 0;
-                        if (kr == KERNEL-1) begin
-                            kr <= 0;
-                            if (ic == IN_CHANNELS-1) begin
-                                logic signed [ACCW-1:0] shifted;
-                                shifted = (acc + prod_ext) >>> FRAC_BITS;
+                    prod_ext_q <= prod_ext;      // register product for next state
+                    state      <= ACCUM_ADD;
+              end
 
-                                if      (shifted > S_MAXX) res_q = S_MAX;
-                                else if (shifted < S_MINX) res_q = S_MIN;
-                                else                       res_q = shifted[DATA_WIDTH-1:0];
+              // ---------------------------------------------------------
+              // ACCUM_ADD: accumulate registered product, advance tap
+              // counters, and on final tap compute final pixel output.
+              // ---------------------------------------------------------
+              ACCUM_ADD: begin
+                    logic last_kc, last_kr, last_ic, last_tap;
+                    last_kc  = (kc == KERNEL-1);
+                    last_kr  = (kr == KERNEL-1);
+                    last_ic  = (ic == IN_CHANNELS-1);
+                    last_tap = last_kc && last_kr && last_ic;
 
-                                conv_addr_q <= of_addr_t'(lin3(oc, orow, ocol, HEIGHT, WIDTH));
-                                state <= WRITE;
+                    // accumulate current tap (use acc+prod_ext_q for “this” tap)
+                    acc <= acc + prod_ext_q;
+
+                    if (last_tap) begin
+                        logic signed [ACCW-1:0] shifted;
+
+                        // final fixed-point downscale
+                        shifted = (acc + prod_ext_q) >>> FRAC_BITS;
+
+                        // saturate/clamp to DATA_WIDTH
+                        if      (shifted > S_MAXX) res_q <= S_MAX;
+                        else if (shifted < S_MINX) res_q <= S_MIN;
+                        else                       res_q <= shifted[DATA_WIDTH-1:0];
+
+                        // stage write address
+                        conv_addr_q <= of_addr_t'(lin3(oc, orow, ocol, HEIGHT, WIDTH));
+                        state       <= WRITE;
+                    end else begin
+                        // advance tap indices
+                        if (last_kc) begin
+                            kc <= 0;
+                            if (last_kr) begin
+                                kr <= 0;
+                                ic <= ic + 1;
                             end else begin
-                                ic     <= ic + 1;
-                                w_addr <= w_addr + w_addr_t'(1);
-                                state  <= READ;
+                                kr <= kr + 1;
                             end
                         end else begin
-                            kr     <= kr + 1;
-                            w_addr <= w_addr + w_addr_t'(1);
-                            state  <= READ;
+                            kc <= kc + 1;
                         end
-                    end else begin
-                        kc     <= kc + 1;
+
+                        // advance weight address for next tap
                         w_addr <= w_addr + w_addr_t'(1);
+
                         state  <= READ;
                     end
               end
 
+              // ---------------------------------------------------------
+              // WRITE: 1-cycle write strobe for output feature map BRAM.
+              // Then advance output pixel/channel and reset tap counters.
+              // ---------------------------------------------------------
               WRITE: begin
                     conv_addr <= conv_addr_q;
                     conv_d    <= res_q;
@@ -327,6 +389,7 @@ module conv2d #(
                             if (oc == OUT_CHANNELS-1) begin
                                 state <= FINISH;
                             end else begin
+                                // next output channel
                                 oc        <= oc + 1;
                                 ic<=0; kr<=0; kc<=0;
                                 acc       <= bias_ext(B_rom[oc+1]);
@@ -335,6 +398,7 @@ module conv2d #(
                                 state     <= READ;
                             end
                         end else begin
+                            // next output row
                             orow <= orow + 1;
                             ic<=0; kr<=0; kc<=0;
                             acc    <= bias_ext(B_rom[oc]);
@@ -342,6 +406,7 @@ module conv2d #(
                             state  <= READ;
                         end
                     end else begin
+                        // next output column
                         ocol <= ocol + 1;
                         ic<=0; kr<=0; kc<=0;
                         acc    <= bias_ext(B_rom[oc]);
@@ -350,6 +415,9 @@ module conv2d #(
                     end
               end
 
+              // ---------------------------------------------------------
+              // FINISH: pulse done for 1 cycle, then return to IDLE.
+              // ---------------------------------------------------------
               FINISH: begin
                     done  <= 1'b1;
                     state <= IDLE;

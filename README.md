@@ -16,8 +16,8 @@ This project demonstrates how fixed-point neural network inference can be implem
 
 ### Key Results
 
-- **Total latency:** ~379491 cycles  
-  → **~3.79 ms @ 100 MHz**
+- **Total latency:** ~435939 cycles  
+  → **~4.36 ms @ 100 MHz**
 - **Prediction:** Matches software reference (e.g. digit `7`, UART byte `0x37`)
 - **Top-level module:** `hdl/top_level.sv`
 - **Verification:** Cycle-accurate Verilator simulation with per-stage timing
@@ -76,8 +76,8 @@ Expected output:
 
 ```bash
 ---- Performance Report ----
-Frame cycles: 379491
- conv  = 288515
+Frame cycles: 435939
+ conv  = 322963
  relu  = 18819
  pool  = 9411
  flat  = 1
