@@ -1,6 +1,7 @@
 `timescale 1ns/1ps
 `default_nettype none
-// This is still mismatched, but full pipeline is working, so ignoring for now.
+
+// 1-cycle synchronous BRAM read model for IFMAP (matches conv2d timing)
 module tb_conv2d;
   // Params (FRAC_BITS=0 -> pure integer math)
   localparam int DATA_WIDTH=16, FRAC_BITS=0;
@@ -54,19 +55,20 @@ module tb_conv2d;
   logic             if_en;
   logic signed [DATA_WIDTH-1:0] if_q;
 
-  // 1-cycle latency model: register address when enabled, data is always the
-    // content at the last-enabled address (no gating on data)
-    logic [IF_AW-1:0] if_addr_q;
-    logic signed [DATA_WIDTH-1:0] if_q_reg;
+  // 1-cycle synchronous BRAM read model (output updates only on if_en)
+  logic [IF_AW-1:0] if_addr_q;
+  logic signed [DATA_WIDTH-1:0] if_q_reg;
 
-    always_ff @(posedge clk) begin
-    if (if_en) if_addr_q <= if_addr;
-    if_q_reg <= ifmem[if_addr_q];
+  always_ff @(posedge clk) begin
+    if (if_en) begin
+      if_addr_q <= if_addr;          // captured for debug / visibility
+      if_q_reg  <= ifmem[if_addr];   // data becomes valid next cycle (registered)
     end
+  end
 
-    assign if_q = if_q_reg;
+  assign if_q = if_q_reg;
 
-    // (Optional) debug after updates settle
+    // debug after updates settle
     always @(posedge clk) if (if_en)
     $strobe("[%0t] TB  : if_en=1 addr=%0d -> if_q_next=%0d", $time, if_addr, ifmem[if_addr]);
 

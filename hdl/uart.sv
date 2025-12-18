@@ -1,148 +1,230 @@
-//======================================================================
-// uart.sv — Simple UART Receiver and Transmitter
-//----------------------------------------------------------------------
-// What this file provides:
-//   • `uart_rx` : Receives serial data (8N1 format), outputs each byte
-//                 with a one-cycle `rx_dv` pulse.
-//   • `uart_tx` : Transmits bytes over a serial line (8N1 format) when
-//                 `tx_dv` is pulsed with a valid `tx_byte`.
+//==============================================================================
+// uart.sv — Minimal 8N1 UART RX/TX (LSB-first) for FPGA testbenches + simple SoCs
 //
-// Key points (applies to both):
-//   • Parameter CLKS_PER_BIT sets baud rate relative to system clock.
-//     For example: at 50 MHz and 115200 baud, CLKS_PER_BIT ≈ 434.
-//   • Both use small FSMs to step through START, DATA, STOP, CLEANUP.
-//   • Data is 8 bits, no parity, 1 stop bit.
+// Implements:
+//   • uart_rx: samples an 8N1 frame and pulses rx_dv for 1 cycle per byte
+//   • uart_tx: transmits an 8N1 frame when tx_dv is pulsed with tx_byte
 //
-//======================================================================
+// Format:
+//   • 1 start bit (0), 8 data bits (LSB first), 1 stop bit (1), no parity
+//
+// Timing model:
+//   • CLKS_PER_BIT = CLK_FREQ / BAUD (integer divider)
+//   • RX samples each data bit near the centre of the bit period.
+//   • Both blocks are fully synchronous to clk; reset is synchronous.
+//
+// Notes:
+//   • For RX: after detecting start, we wait HALF a bit to confirm start,
+//     then sample bit0 after one full bit period (≈1.5 bits from edge),
+//     then each subsequent bit every 1 bit period.
+//==============================================================================
 
-//======================================================================
+
+//==============================================================================
 // UART Receiver (uart_rx)
-//----------------------------------------------------------------------
-// How it works:
-//   • IDLE    : Wait for start bit (rx goes low).
-//   • START   : Wait half a bit period to align sample point.
-//   • DATA    : Sample 8 data bits in sequence.
-//   • STOP    : Wait one stop bit; then assert rx_dv and output rx_byte.
-//   • CLEANUP : Return to IDLE for next frame.
-//======================================================================
-module uart_rx #(
+//------------------------------------------------------------------------------
+// FSM:
+//   IDLE    : wait for rx == 0 (start edge)
+//   START   : wait half-bit, confirm still low; then begin data timing
+//   DATA    : sample 8 bits, one per bit period
+//   STOP    : wait 1 bit period, optionally check stop == 1, then pulse rx_dv
+//   CLEANUP : return to IDLE
+//==============================================================================
 
-    parameter int CLK_FREQ = 100_000_000,  // in Hz
-    parameter int BAUD     = 115200,
-    parameter CLKS_PER_BIT = CLK_FREQ / BAUD
+module uart_rx #(
+    parameter int CLK_FREQ      = 100_000_000,
+    parameter int BAUD          = 115200,
+    parameter int CLKS_PER_BIT  = CLK_FREQ / BAUD
 )(
-    input  logic clk, reset,
-    input  logic rx,                // serial input line
-    output logic rx_dv,             // pulses high for 1 clk when a byte is ready
-    output logic [7:0] rx_byte      // received byte
+    input  logic       clk,
+    input  logic       reset,
+    input  logic       rx,
+    output logic       rx_dv,
+    output logic [7:0] rx_byte
 );
+
     typedef enum logic [2:0] {IDLE, START, DATA, STOP, CLEANUP} state_t;
     state_t state;
 
-    logic [$clog2(CLKS_PER_BIT)-1:0] clk_cnt; // clock counter per bit
-    logic [2:0] bit_idx;                      // which data bit (0–7)
-    logic [7:0] data;                         // shift register
+    localparam int CNTW = (CLKS_PER_BIT <= 1) ? 1 : $clog2(CLKS_PER_BIT);
+    logic [CNTW-1:0] clk_cnt;
+    logic [2:0]      bit_idx;
+    logic [7:0]      data;
+
+    // Handy constants for 0-based counters
+    localparam int HALF_BIT = (CLKS_PER_BIT/2) - 1;  // mid start-bit sample
+    localparam int FULL_BIT = CLKS_PER_BIT - 1;      // one whole bit time
 
     always_ff @(posedge clk) begin
         if (reset) begin
-            state<=IDLE; rx_dv<=0; clk_cnt<='0; bit_idx<=0; data<=0;
+            state   <= IDLE;
+            rx_dv   <= 1'b0;
+            rx_byte <= '0;
+            clk_cnt <= '0;
+            bit_idx <= '0;
+            data    <= '0;
         end else begin
-            rx_dv <= 1'b0; // default: not valid
-            case (state)
-                IDLE:   if (~rx) begin                 // detect start bit (rx=0)
-                            state<=START; clk_cnt<='0;
-                        end
-                START:  if (clk_cnt == (CLKS_PER_BIT/2)) begin
-                            // mid-bit sample point
-                            clk_cnt<='0; state<=DATA; bit_idx<=0;
-                        end else clk_cnt <= clk_cnt + 1;
-                DATA:   begin
-                            if (clk_cnt == CLKS_PER_BIT-1) begin
-                                clk_cnt <= '0;
-                                data[bit_idx] <= rx;   // sample data bit
-                                if (bit_idx==3'd7) state<=STOP;
-                                else bit_idx <= bit_idx + 1;
-                            end else clk_cnt <= clk_cnt + 1;
-                        end
-                STOP:   if (clk_cnt == CLKS_PER_BIT-1) begin
-                            rx_byte <= data;           // output full byte
-                            rx_dv   <= 1'b1;           // pulse valid
-                            state   <= CLEANUP;
+            rx_dv <= 1'b0; // default
+
+            unique case (state)
+
+                IDLE: begin
+                    clk_cnt <= '0;
+                    bit_idx <= '0;
+                    if (!rx) begin
+                        // Start bit edge detected
+                        state   <= START;
+                        clk_cnt <= '0;
+                    end
+                end
+
+                START: begin
+                    // Wait to the middle of the start bit and confirm it's still low.
+                    if (clk_cnt == HALF_BIT[CNTW-1:0]) begin
+                        if (!rx) begin
                             clk_cnt <= '0;
-                        end else clk_cnt <= clk_cnt + 1;
-                CLEANUP: state<=IDLE;                  // wait for next start bit
+                            bit_idx <= '0;
+                            state   <= DATA;
+                        end else begin
+                            // False start/glitch
+                            state <= IDLE;
+                        end
+                    end else begin
+                        clk_cnt <= clk_cnt + 1'b1;
+                    end
+                end
+
+                DATA: begin
+                    // Sample once per full bit period (centre-aligned due to START half-bit wait).
+                    if (clk_cnt == FULL_BIT[CNTW-1:0]) begin
+                        clk_cnt <= '0;
+                        data[bit_idx] <= rx;
+                        if (bit_idx == 3'd7) state <= STOP;
+                        else                  bit_idx <= bit_idx + 1'b1;
+                    end else begin
+                        clk_cnt <= clk_cnt + 1'b1;
+                    end
+                end
+
+                STOP: begin
+                    if (clk_cnt == FULL_BIT[CNTW-1:0]) begin
+                        clk_cnt <= '0;
+                        // Optional: could check rx==1 here for framing error detection.
+                        rx_byte <= data;
+                        rx_dv   <= 1'b1;
+                        state   <= CLEANUP;
+                    end else begin
+                        clk_cnt <= clk_cnt + 1'b1;
+                    end
+                end
+
+                CLEANUP: begin
+                    state <= IDLE;
+                end
+
+                default: state <= IDLE;
+
             endcase
         end
     end
 endmodule
 
-//======================================================================
+
+//==============================================================================
 // UART Transmitter (uart_tx)
-//----------------------------------------------------------------------
-// How it works:
-//   • IDLE    : Line idle high. Wait for tx_dv pulse with tx_byte.
-//   • START   : Drive line low for one bit (start bit).
-//   • DATA    : Send 8 data bits, LSB first.
-//   • STOP    : Drive line high for one stop bit.
-//   • CLEANUP : Return to IDLE.
-//
-// Notes:
-//   • tx_busy is high from START through STOP to block new requests.
-//   • tx_dv must be a one-cycle pulse with valid tx_byte.
-//======================================================================
+//------------------------------------------------------------------------------
+// FSM:
+//   IDLE    : tx high; wait tx_dv
+//   START   : drive 0 for 1 bit
+//   DATA    : drive 8 bits (LSB first), 1 bit each
+//   STOP    : drive 1 for 1 bit
+//   CLEANUP : return to IDLE
+//==============================================================================
+
 module uart_tx #(
-    parameter int CLK_FREQ = 100_000_000,  // in Hz
-    parameter int BAUD     = 115200,
-    parameter CLKS_PER_BIT = CLK_FREQ / BAUD
+    parameter int CLK_FREQ      = 100_000_000,
+    parameter int BAUD          = 115200,
+    parameter int CLKS_PER_BIT  = CLK_FREQ / BAUD
 )(
-    input  logic clk, reset,
-    input  logic tx_dv,           // pulse high with valid tx_byte
-    input  logic [7:0] tx_byte,   // byte to transmit
-    output logic tx,              // serial output line
-    output logic tx_busy          // high while transmission is in progress
+    input  logic       clk,
+    input  logic       reset,
+    input  logic       tx_dv,
+    input  logic [7:0] tx_byte,
+    output logic       tx,
+    output logic       tx_busy
 );
+
     typedef enum logic [2:0] {IDLE, START, DATA, STOP, CLEANUP} state_t;
     state_t state;
 
-    logic [$clog2(CLKS_PER_BIT)-1:0] clk_cnt; // clock counter per bit
-    logic [2:0] bit_idx;                      // which data bit (0–7)
-    logic [7:0] data_reg;                     // latched tx byte
+    localparam int CNTW = (CLKS_PER_BIT <= 1) ? 1 : $clog2(CLKS_PER_BIT);
+    logic [CNTW-1:0] clk_cnt;
+    logic [2:0]      bit_idx;
+    logic [7:0]      data_reg;
+
+    localparam int FULL_BIT = CLKS_PER_BIT - 1;
 
     always_ff @(posedge clk) begin
         if (reset) begin
-            state<=IDLE; tx<=1'b1; tx_busy<=0;
-            clk_cnt<='0; bit_idx<=0; data_reg<=0;
+            state    <= IDLE;
+            tx       <= 1'b1;
+            tx_busy  <= 1'b0;
+            clk_cnt  <= '0;
+            bit_idx  <= '0;
+            data_reg <= '0;
         end else begin
-            case (state)
-                IDLE:   begin
-                            tx<=1'b1; tx_busy<=0;     // idle line high
-                            if (tx_dv) begin
-                                tx_busy<=1;
-                                data_reg<=tx_byte;    // latch data
-                                state<=START; clk_cnt<='0;
-                            end
-                        end
-                START:  begin
-                            tx<=1'b0;                 // start bit
-                            if (clk_cnt==CLKS_PER_BIT-1) begin
-                                clk_cnt<='0; bit_idx<=0; state<=DATA;
-                            end else clk_cnt<=clk_cnt+1;
-                        end
-                DATA:   begin
-                            tx<=data_reg[bit_idx];    // send data bit
-                            if (clk_cnt==CLKS_PER_BIT-1) begin
-                                clk_cnt<='0;
-                                if (bit_idx==3'd7) state<=STOP;
-                                else bit_idx<=bit_idx+1;
-                            end else clk_cnt<=clk_cnt+1;
-                        end
-                STOP:   begin
-                            tx<=1'b1;                 // stop bit
-                            if (clk_cnt==CLKS_PER_BIT-1) begin
-                                state<=CLEANUP; clk_cnt<='0;
-                            end else clk_cnt<=clk_cnt+1;
-                        end
-                CLEANUP: state<=IDLE;                 // back to idle
+            unique case (state)
+
+                IDLE: begin
+                    tx      <= 1'b1;
+                    tx_busy <= 1'b0;
+                    clk_cnt <= '0;
+                    bit_idx <= '0;
+                    if (tx_dv) begin
+                        tx_busy  <= 1'b1;
+                        data_reg <= tx_byte;
+                        state    <= START;
+                    end
+                end
+
+                START: begin
+                    tx <= 1'b0;
+                    if (clk_cnt == FULL_BIT[CNTW-1:0]) begin
+                        clk_cnt <= '0;
+                        bit_idx <= '0;
+                        state   <= DATA;
+                    end else begin
+                        clk_cnt <= clk_cnt + 1'b1;
+                    end
+                end
+
+                DATA: begin
+                    tx <= data_reg[bit_idx];
+                    if (clk_cnt == FULL_BIT[CNTW-1:0]) begin
+                        clk_cnt <= '0;
+                        if (bit_idx == 3'd7) state <= STOP;
+                        else                 bit_idx <= bit_idx + 1'b1;
+                    end else begin
+                        clk_cnt <= clk_cnt + 1'b1;
+                    end
+                end
+
+                STOP: begin
+                    tx <= 1'b1;
+                    if (clk_cnt == FULL_BIT[CNTW-1:0]) begin
+                        clk_cnt <= '0;
+                        state   <= CLEANUP;
+                    end else begin
+                        clk_cnt <= clk_cnt + 1'b1;
+                    end
+                end
+
+                CLEANUP: begin
+                    state <= IDLE;
+                end
+
+                default: state <= IDLE;
+
             endcase
         end
     end

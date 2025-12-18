@@ -33,7 +33,10 @@ module tb_maxpool;
   always_ff @(posedge clk) begin
     conv_addr_q <= conv_addr;
     conv_en_q   <= conv_en;
-    conv_q      <= (conv_en_q) ? conv_mem[conv_addr_q] : '0;
+  end
+
+  always_comb begin
+    conv_q = (conv_en_q) ? conv_mem[conv_addr_q] : '0;
   end
 
   // POOL buffer capture

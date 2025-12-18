@@ -26,27 +26,33 @@ module tb_uart;
     .clk, .reset, .rx(tx), .rx_dv, .rx_byte
   );
 
-  task automatic send_byte(input byte b);
-
+  task automatic send_byte(input logic [7:0] b);
     int guard;
     bit got;
     logic [7:0] rcv;
+
+    // Wait until transmitter is truly idle before asserting tx_dv
+    while (tx_busy) @(posedge clk);
+
+    // (Optional but helpful) ensure at least 1 bit-time of idle high between frames
+    repeat (CLKS_PER_BIT) @(posedge clk);
+
     // single-cycle tx_dv pulse
     @(posedge clk);
-    tx_byte <= b; tx_dv <= 1;
+    tx_byte <= b;
+    tx_dv   <= 1'b1;
     @(posedge clk);
-    tx_dv <= 0;
+    tx_dv   <= 1'b0;
+
     // wait until rx_dv arrives (bounded)
     guard=0; got=0;
-    while (guard< (12*CLKS_PER_BIT*2)) begin // generous
+    while (guard < (12*CLKS_PER_BIT*2)) begin
       @(posedge clk); guard++;
-      if (rx_dv) begin rcv=rx_byte; got=1; break; end
+      if (rx_dv) begin rcv = rx_byte; got = 1; break; end
     end
     if (!got) $fatal(1,"UART: no rx_dv for 0x%0h", b);
-    if (rcv!==b) $error("UART: rx 0x%0h != tx 0x%0h", rcv, b);
+    if (rcv !== b) $error("UART: rx 0x%0h != tx 0x%0h", rcv, b);
     else $display("PASS: UART 0x%0h", b);
-    // small idle
-    repeat(20) @(posedge clk);
   endtask
 
   initial begin

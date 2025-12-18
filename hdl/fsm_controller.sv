@@ -1,35 +1,58 @@
-//----------------------------------------------------------------------
+//------------------------------------------------------------------------------
 // Module: fsm_controller
-// Description:
-//   This module implements a finite state machine (FSM) to control the
-//   sequential execution of stages in the CNN processing pipeline.
-//   It coordinates the following stages: convolution, ReLU activation,
-//   pooling, flattening, dense layer, and argmax/UART transmission.
-//   The controller waits for each stage to signal completion (`*_done`),
-//   then issues a single-cycle start pulse (`*_start`) to the next stage.
-//   It ensures only one stage runs at a time, preventing overlap, and
-//   checks the UART transmission busy signal (`tx_busy`) to avoid early
-//   transmission. The pipeline begins when `frame_loaded` is asserted,
-//   and a busy flag indicates when processing is active.
-//----------------------------------------------------------------------
-
+//
+// Overview
+//   Top-level pipeline controller for a CNN inference datapath. The controller
+//   sequences the stages (CONV → RELU → POOL → FLAT → DENSE → TX) so that only
+//   one stage is active at a time. Each stage is started with a single-cycle
+//   start pulse and is considered complete when its corresponding *_done flag
+//   asserts.
+//
+// Handshake model
+//   • Inputs:
+//       - frame_loaded: indicates a complete input frame is available.
+//       - *_done:       stage completion strobes/levels (assumed synchronous).
+//       - tx_ready:     prediction ready for transmit (e.g., argmax done).
+//       - tx_busy:      UART transmitter busy (prevents premature tx_start).
+//   • Outputs:
+//       - *_start: 1-cycle pulses to launch each stage.
+//       - busy:    high while processing a frame end-to-end.
+//
+// Sequencing
+//   IDLE  : wait for frame_loaded, then pulse conv_start.
+//   CONV  : wait conv_done, then pulse relu_start.
+//   RELU  : wait relu_done, then pulse pool_start.
+//   POOL  : wait pool_done, then advance to FLAT.
+//   FLAT  : wait flat_done, then pulse dense_start.
+//   DENSE : wait dense_done, then advance to TX.
+//   TX    : wait tx_ready AND tx_busy deasserted, then pulse tx_start.
+//   WAIT  : one-cycle buffer (tail) then return to IDLE.
+//
+// Notes
+//   • Start pulses are deasserted by default every cycle; they are asserted
+//     only on the transition into the corresponding stage.
+//   • If any *_done is level-high for multiple cycles, the FSM will still only
+//     issue a single start pulse for the next stage because it advances state
+//     immediately when the condition is met.
+//------------------------------------------------------------------------------
 
 module fsm_controller (
-    input  logic clk, reset,
+    input  logic clk,
+    input  logic reset,
 
-    // Trigger to start the whole pipeline (after UART frame load)
+    // Trigger to start the pipeline (frame has been loaded via UART)
     input  logic frame_loaded,
 
-    // Done flags from each stage
+    // Done flags from stages
     input  logic conv_done,
     input  logic relu_done,
     input  logic pool_done,
     input  logic flat_done,
     input  logic dense_done,
-    input  logic tx_ready,   // argmax_done
-    input  logic tx_busy,    // UART TX busy flag
+    input  logic tx_ready,   // e.g. argmax_done
+    input  logic tx_busy,    // UART TX busy
 
-    // Start pulses (1-cycle each) to kick off stages
+    // One-cycle start pulses to stages
     output logic conv_start,
     output logic relu_start,
     output logic pool_start,
@@ -37,96 +60,92 @@ module fsm_controller (
     output logic tx_start,
 
     // Status
-    output logic busy         // high while pipeline is active
+    output logic busy
 );
 
-    // FSM states — each corresponds to waiting for a stage to finish
     typedef enum logic [2:0] {
-        IDLE,   // waiting for new frame
-        CONV,   // convolution running
-        RELU,   // relu running
-        POOL,   // pooling running
-        FLAT,   // flattening (handled in top_level)
-        DENSE,  // dense layer running
-        TX,     // waiting to transmit prediction
-        WAIT    // small buffer state before going idle
+        IDLE,    // waiting for a new frame
+        CONV,    // convolution running
+        RELU,    // ReLU running
+        POOL,    // pooling running
+        FLAT,    // flattening (performed outside this module)
+        DENSE,   // dense layer running
+        TX,      // waiting to transmit prediction
+        WAIT     // one-cycle tail state before returning to IDLE
     } state_t;
+
     state_t state;
 
-    //==================================================================
-    // FSM: advance through pipeline stages in order
-    //==================================================================
     always_ff @(posedge clk) begin
         if (reset) begin
             state <= IDLE;
+            busy  <= 1'b0;
             {conv_start, relu_start, pool_start, dense_start, tx_start} <= '0;
-            busy <= 1'b0;
         end else begin
-            // Default: no stage triggered unless explicitly set
+            // Default: no stage starts unless explicitly pulsed below
             {conv_start, relu_start, pool_start, dense_start, tx_start} <= '0;
 
             unique case (state)
-              //--------------------------------------------------------
-              // IDLE — wait for frame to be loaded
-              //--------------------------------------------------------
-              IDLE: begin
-                  busy <= 1'b0;
-                  if (frame_loaded) begin
-                      busy       <= 1'b1;
-                      conv_start <= 1'b1;   // kick off conv
-                      state      <= CONV;
-                  end
-              end
 
-              //--------------------------------------------------------
-              // CONV — wait until convolution finishes
-              //--------------------------------------------------------
-              CONV:  if (conv_done) begin
-                          relu_start <= 1'b1; // start relu
-                          state      <= RELU;
-                     end
+                IDLE: begin
+                    busy <= 1'b0;
+                    if (frame_loaded) begin
+                        busy       <= 1'b1;
+                        conv_start <= 1'b1;
+                        state      <= CONV;
+                    end
+                end
 
-              //--------------------------------------------------------
-              // RELU — wait until relu finishes
-              //--------------------------------------------------------
-              RELU:  if (relu_done) begin
-                          pool_start <= 1'b1; // start pooling
-                          state      <= POOL;
-                     end
+                CONV: begin
+                    if (conv_done) begin
+                        relu_start <= 1'b1;
+                        state      <= RELU;
+                    end
+                end
 
-              //--------------------------------------------------------
-              // POOL — flattening is done outside this FSM
-              //--------------------------------------------------------
-              POOL:  if (pool_done) state <= FLAT;
+                RELU: begin
+                    if (relu_done) begin
+                        pool_start <= 1'b1;
+                        state      <= POOL;
+                    end
+                end
 
-              //--------------------------------------------------------
-              // FLAT — wait until flattening finishes, then start dense
-              //--------------------------------------------------------
-              FLAT:  if (flat_done) begin
-                          dense_start <= 1'b1;
-                          state       <= DENSE;
-                     end
+                POOL: begin
+                    if (pool_done) begin
+                        state <= FLAT;
+                    end
+                end
 
-              //--------------------------------------------------------
-              // DENSE — wait until dense finishes
-              //--------------------------------------------------------
-              DENSE: if (dense_done) state <= TX;
+                FLAT: begin
+                    if (flat_done) begin
+                        dense_start <= 1'b1;
+                        state       <= DENSE;
+                    end
+                end
 
-              //--------------------------------------------------------
-              // TX — wait until argmax result ready and UART not busy
-              //--------------------------------------------------------
-              TX:    if (tx_ready && !tx_busy) begin
-                          tx_start <= 1'b1; // trigger UART transmission
-                          state    <= WAIT;
-                     end
+                DENSE: begin
+                    if (dense_done) begin
+                        state <= TX;
+                    end
+                end
 
-              //--------------------------------------------------------
-              // WAIT — buffer cycle before returning to idle
-              //--------------------------------------------------------
-              WAIT:  state <= IDLE;
+                TX: begin
+                    if (tx_ready && !tx_busy) begin
+                        tx_start <= 1'b1;
+                        state    <= WAIT;
+                    end
+                end
 
-              default: state <= IDLE;
+                WAIT: begin
+                    state <= IDLE;
+                end
+
+                default: begin
+                    state <= IDLE;
+                end
+
             endcase
         end
     end
+
 endmodule
