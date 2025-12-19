@@ -83,7 +83,7 @@
 (* keep_hierarchy = "yes" *)
 module conv2d #(
     parameter int DATA_WIDTH      = 16,
-    parameter int FRAC_BITS       = 0,
+    parameter int FRAC_BITS       = 7,
     parameter int IN_CHANNELS     = 1,
     parameter int OUT_CHANNELS    = 8,
     parameter int KERNEL          = 3,                          // assumed odd

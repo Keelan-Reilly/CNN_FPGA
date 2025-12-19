@@ -36,12 +36,10 @@ module tb_dense;
     invec[0]=10; invec[1]=3; invec[2]=7; invec[3]=4; // x=[10,3,7,4]
   end
 
-  logic [$bits(in_addr)-1:0] in_addr_q;
-  logic in_en_q;
   always_ff @(posedge clk) begin
-    in_addr_q <= in_addr;
-    in_en_q   <= in_en;
-    in_q      <= in_en_q ? invec[in_addr_q] : '0;
+    if (in_en) begin
+      in_q <= invec[in_addr];   // 1-cycle sync read, hold otherwise
+    end
   end
 
   // Outputs

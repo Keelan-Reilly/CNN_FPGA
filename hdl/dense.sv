@@ -53,7 +53,7 @@
 // Notes
 //   • `FRAC_BITS` aligns bias/products into the accumulator domain.
 //   • `POST_SHIFT` provides extra post-accum scaling (e.g., dequant / gain).
-//   • Set `LAT` to match the source of `in_q` (your TB behaves like LAT=2).
+//   • Set `LAT` to match the source of `in_q` (TB behaves like LAT=2).
 //   • ACCW is sized to avoid overflow growth across IN_DIM taps.
 //----------------------------------------------------------------------
 
@@ -63,10 +63,10 @@ module dense #(
   parameter int FRAC_BITS  = 7,
   parameter int IN_DIM     = 1568,
   parameter int OUT_DIM    = 10,
-  parameter int POST_SHIFT = 2,
+  parameter int POST_SHIFT = 0,
   parameter string WEIGHTS_FILE = "fc1_weights.mem",
   parameter string BIASES_FILE  = "fc1_biases.mem",
-  parameter int LAT = 2,
+  parameter int LAT = 1,
 
   // ---- debug knobs (non-functional) ----
   parameter bit DBG_ENABLE       = 1,
@@ -118,7 +118,8 @@ module dense #(
   logic signed [DATA_WIDTH-1:0]   w_reg;
 
   // ---------- LAT wait counter ----------
-  logic [$clog2((LAT>0)?LAT:1)-1:0] wait_cnt;
+  localparam int WAITW = (LAT <= 1) ? 1 : $clog2(LAT);
+  logic [WAITW-1:0] wait_cnt;
 
   // ---------- saturation helpers ----------
   localparam logic signed [DATA_WIDTH-1:0] S_MAX  = (1 <<< (DATA_WIDTH-1)) - 1;

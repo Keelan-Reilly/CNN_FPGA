@@ -281,7 +281,7 @@ module top_level #(
         .OUT_DIM(NUM_CLASSES),
         .WEIGHTS_FILE(FC_W_FILE),
         .BIASES_FILE(FC_B_FILE),
-        .POST_SHIFT(2)
+        .POST_SHIFT(0)
     ) u_dense (
         .clk, .reset,
         .start(dense_start),
@@ -305,14 +305,26 @@ module top_level #(
     );
 
     // ============================== UART TX ===========================
-    logic tx_ready = argmax_done;
+    logic tx_ready;
+    logic tx_pending;
     logic tx_busy, tx_dv;
     logic [7:0] tx_byte;
 
     localparam logic [7:0] ASCII_0 = 8'h30;
 
+    always_ff @(posedge clk) begin
+        if (reset) tx_pending <= 1'b0;
+        else begin
+            if (argmax_done) tx_pending <= 1'b1;
+            if (tx_start)    tx_pending <= 1'b0;
+        end
+    end
+
+
     assign tx_dv   = tx_start; // controller issues a 1-cycle pulse
     assign tx_byte = ASCII_0 + {4'b0, predicted_digit};
+    assign tx_ready = tx_pending;
+
 
     uart_tx #(.CLKS_PER_BIT(CLKS_PER_BIT)) TX (
         .clk, .reset,
@@ -378,53 +390,7 @@ module top_level #(
 
     // POOL Port B is owned solely by dense.
     assign poolB_en = dense_in_en;
-
-    // ======================= Dense read address mapping =================
-    // POOL BRAM is stored in CHW order, but dense may prefer a different
-    // logical walk order. Here we generate the physical CHW address using
-    // small HWC counters and shift-add arithmetic.
-    localparam int OS = POOLED;           // 14
-    localparam int C  = OUT_CHANNELS;     // 8
-
-    logic [$clog2(C)-1:0]  hwc_ch;
-    logic [$clog2(OS)-1:0] hwc_row, hwc_col;
-
-    always_ff @(posedge clk) begin
-        if (reset) begin
-            hwc_ch  <= '0;
-            hwc_row <= '0;
-            hwc_col <= '0;
-        end else begin
-            if (dense_start) begin
-                hwc_ch  <= '0;
-                hwc_row <= '0;
-                hwc_col <= '0;
-            end else if (dense_in_en) begin
-                if (hwc_ch == C-1) begin
-                    hwc_ch <= '0;
-                    if (hwc_col == OS-1) begin
-                        hwc_col <= '0;
-                        if (hwc_row == OS-1) hwc_row <= '0;
-                        else                  hwc_row <= hwc_row + 1;
-                    end else begin
-                        hwc_col <= hwc_col + 1;
-                    end
-                end else begin
-                    hwc_ch <= hwc_ch + 1;
-                end
-            end
-        end
-    end
-
-    // CHW address = ch*(OS*OS) + row*OS + col
-    // For OS=14: OS*OS=196 = 128+64+8-4, and row*14 = 16-2.
-    wire [PO_AW-1:0] addr_ch  =
-        ({hwc_ch,7'b0} + {hwc_ch,6'b0} + {hwc_ch,3'b0}) - {hwc_ch,2'b0}; // 196*ch
-
-    wire [PO_AW-1:0] addr_row =
-        ({hwc_row,4'b0}) - {hwc_row,1'b0};                              // 14*row
-
-    assign poolB_addr = addr_ch + addr_row + PO_AW'(hwc_col);
+    assign poolB_addr = dense_in_addr;
 
 `ifndef SYNTHESIS
     // =========================== Sim-only timing ===========================
