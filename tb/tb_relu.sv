@@ -70,6 +70,125 @@ endmodule
 
 
 // ============================================================
+// Assumes DUT timing:
+//   read strobe @ t
+//   write @ t+4
+// so compare against stage [4] of the monitor pipe.
+// ============================================================
+module relu_monitor #(
+  parameter int AW  = 6,
+  parameter int DW  = 16,
+  parameter int N   = 64,
+  parameter string TAG = "DUT"
+)(
+  input  logic                   clk,
+  input  logic                   reset,
+
+  input  logic                   start,
+  input  logic                   done,
+
+  input  logic                   r_en,
+  input  logic [AW-1:0]          r_addr,
+  input  logic signed [31:0]     exp_in,   // expected data for this read (computed in TB)
+
+  input  logic                   w_en,
+  input  logic                   w_we,
+  input  logic [AW-1:0]          w_addr,
+  input  logic signed [DW-1:0]   w_d,
+
+  output int                     reads,
+  output int                     writes
+);
+
+  // 5-deep pipe [0..4]
+  logic [31:0]        rd_addr_pipe0, rd_addr_pipe1, rd_addr_pipe2, rd_addr_pipe3, rd_addr_pipe4;
+  logic signed [31:0] exp_pipe0,     exp_pipe1,     exp_pipe2,     exp_pipe3,     exp_pipe4;
+  logic               v0,            v1,            v2,            v3,            v4;
+
+  int done_cycle_count;
+
+  task automatic clear_all();
+    reads = 0;
+    writes = 0;
+
+    rd_addr_pipe0 = '0; rd_addr_pipe1 = '0; rd_addr_pipe2 = '0; rd_addr_pipe3 = '0; rd_addr_pipe4 = '0;
+    exp_pipe0     = '0; exp_pipe1     = '0; exp_pipe2     = '0; exp_pipe3     = '0; exp_pipe4     = '0;
+    v0            = 1'b0; v1          = 1'b0; v2          = 1'b0; v3          = 1'b0; v4          = 1'b0;
+
+    done_cycle_count = 0;
+  endtask
+
+  initial begin
+    clear_all();
+  end
+
+  always_ff @(posedge clk) begin
+    if (reset) begin
+      clear_all();
+    end else begin
+      if (start) begin
+        clear_all();
+      end
+
+      // shift (unrolled)
+      rd_addr_pipe4 <= rd_addr_pipe3;
+      rd_addr_pipe3 <= rd_addr_pipe2;
+      rd_addr_pipe2 <= rd_addr_pipe1;
+      rd_addr_pipe1 <= rd_addr_pipe0;
+
+      exp_pipe4     <= exp_pipe3;
+      exp_pipe3     <= exp_pipe2;
+      exp_pipe2     <= exp_pipe1;
+      exp_pipe1     <= exp_pipe0;
+
+      v4            <= v3;
+      v3            <= v2;
+      v2            <= v1;
+      v1            <= v0;
+      v0            <= 1'b0;
+
+      // read observe
+      if (r_en) begin
+        if (r_addr !== (reads[AW-1:0])) begin
+          $error("[%0t][%s] BAD_READ_ADDR got=%0d exp=%0d", $time, TAG, r_addr, reads);
+        end
+        rd_addr_pipe0 <= r_addr;
+        exp_pipe0     <= exp_in;
+        v0            <= 1'b1;
+        reads         <= reads + 1;
+      end
+
+      // write observe: match the read from 4 cycles earlier (pre-shift stage 3)
+      if (w_en && w_we) begin
+        if (!v3) begin
+          $error("[%0t][%s] WRITE_WITHOUT_PRIOR_READ addr=%0d", $time, TAG, w_addr);
+        end else begin
+          if (w_addr !== rd_addr_pipe3[AW-1:0]) begin
+            $error("[%0t][%s] BAD_WRITE_ADDR got=%0d exp=%0d",
+                  $time, TAG, w_addr, rd_addr_pipe3[AW-1:0]);
+          end
+          if (w_d !== exp_pipe3[DW-1:0]) begin
+            $error("[%0t][%s] BAD_WRITE_DATA @%0d got=%0d exp=%0d",
+                  $time, TAG, w_addr, w_d, exp_pipe3[DW-1:0]);
+          end
+        end
+        writes <= writes + 1;
+      end
+
+      // done must be 1-cycle pulse
+      if (done) begin
+        done_cycle_count <= done_cycle_count + 1;
+        if (done_cycle_count > 0) $error("[%0t][%s] done not 1-cycle", $time, TAG);
+      end else begin
+        done_cycle_count <= 0;
+      end
+    end
+  end
+
+endmodule
+
+
+// ============================================================
 // "Big" ReLU testbench (Verilator-friendly)
 // ============================================================
 module tb_relu;
@@ -85,44 +204,10 @@ module tb_relu;
     reset = 1'b0;
   end
 
+  // golden helper (32-bit domain)
   function automatic logic signed [31:0] relu32(input logic signed [31:0] x);
     return (x < 0) ? 0 : x;
   endfunction
-
-  // ============================================================
-  // Per-instance monitor state
-  //
-  // DUT timing (with Verilator-safe extra wait):
-  //   read strobe @ t
-  //   capture conv_r_q @ t+3
-  //   write @ t+4
-  // => read->write latency = 4 cycles => check stage [4]
-  // ============================================================
-  typedef struct {
-    int  reads;
-    int  writes;
-    bit  started;
-
-    logic [31:0]        rd_addr_pipe [0:4];
-    logic signed [31:0] exp_d_pipe   [0:4];
-    bit                v_pipe       [0:4];
-
-    bit  done_seen;
-    int  done_cycle_count;
-  } mon_t;
-
-  task automatic mon_reset(ref mon_t m);
-    m.reads            = 0;
-    m.writes           = 0;
-    m.started          = 0;
-    m.done_seen        = 0;
-    m.done_cycle_count = 0;
-    for (int i=0;i<5;i++) begin
-      m.rd_addr_pipe[i] = '0;
-      m.exp_d_pipe[i]   = '0;
-      m.v_pipe[i]       = 1'b0;
-    end
-  endtask
 
   // ============================================================
   // Instance 0: DW=16, C=1, SZ=8  => N=64
@@ -152,6 +237,18 @@ module tb_relu;
     .conv_r_addr(r_addr0), .conv_r_en(r_en0), .conv_r_q(r_q0),
     .conv_w_addr(w_addr0), .conv_w_en(w_en0), .conv_w_we(w_we0), .conv_w_d(w_d0),
     .done(done0)
+  );
+
+  logic signed [31:0] exp0;
+  always_comb exp0 = relu32($signed(bram0.mem[r_addr0]));
+
+  int reads0, writes0;
+  relu_monitor #(.AW(AW0), .DW(DW0), .N(N0), .TAG("DUT0")) mon0 (
+    .clk, .reset,
+    .start(start0), .done(done0),
+    .r_en(r_en0), .r_addr(r_addr0), .exp_in(exp0),
+    .w_en(w_en0), .w_we(w_we0), .w_addr(w_addr0), .w_d(w_d0),
+    .reads(reads0), .writes(writes0)
   );
 
   // ============================================================
@@ -184,6 +281,18 @@ module tb_relu;
     .done(done1)
   );
 
+  logic signed [31:0] exp1;
+  always_comb exp1 = relu32($signed(bram1.mem[r_addr1]));
+
+  int reads1, writes1;
+  relu_monitor #(.AW(AW1), .DW(DW1), .N(N1), .TAG("DUT1")) mon1 (
+    .clk, .reset,
+    .start(start1), .done(done1),
+    .r_en(r_en1), .r_addr(r_addr1), .exp_in(exp1),
+    .w_en(w_en1), .w_we(w_we1), .w_addr(w_addr1), .w_d(w_d1),
+    .reads(reads1), .writes(writes1)
+  );
+
   // ============================================================
   // Instance 2: DW=12, C=3, SZ=4 => N=48
   // ============================================================
@@ -212,6 +321,18 @@ module tb_relu;
     .conv_r_addr(r_addr2), .conv_r_en(r_en2), .conv_r_q(r_q2),
     .conv_w_addr(w_addr2), .conv_w_en(w_en2), .conv_w_we(w_we2), .conv_w_d(w_d2),
     .done(done2)
+  );
+
+  logic signed [31:0] exp2;
+  always_comb exp2 = relu32($signed(bram2.mem[r_addr2]));
+
+  int reads2, writes2;
+  relu_monitor #(.AW(AW2), .DW(DW2), .N(N2), .TAG("DUT2")) mon2 (
+    .clk, .reset,
+    .start(start2), .done(done2),
+    .r_en(r_en2), .r_addr(r_addr2), .exp_in(exp2),
+    .w_en(w_en2), .w_we(w_we2), .w_addr(w_addr2), .w_d(w_d2),
+    .reads(reads2), .writes(writes2)
   );
 
   // ============================================================
@@ -264,124 +385,7 @@ module tb_relu;
   endtask
 
   // ============================================================
-  // Monitors
-  // ============================================================
-  mon_t m0, m1, m2;
-
-  task automatic mon_shift5(ref mon_t m);
-    for (int k=4;k>0;k--) begin
-      m.rd_addr_pipe[k] <= m.rd_addr_pipe[k-1];
-      m.exp_d_pipe[k]   <= m.exp_d_pipe[k-1];
-      m.v_pipe[k]       <= m.v_pipe[k-1];
-    end
-    m.v_pipe[0] <= 1'b0;
-  endtask
-
-  task automatic mon_step_common(
-    ref mon_t m,
-    input bit start,
-    input bit done,
-    input bit r_en,
-    input int unsigned r_addr_u,
-    input int signed  exp_from_mem,
-    input bit w_en,
-    input bit w_we,
-    input int unsigned w_addr_u,
-    input int signed  w_d_s,
-    input string tag
-  );
-    if (reset) begin
-      mon_reset(m);
-    end else begin
-      if (start) begin
-        mon_reset(m);
-        m.started = 1;
-      end
-
-      mon_shift5(m);
-
-      if (r_en) begin
-        if (r_addr_u !== m.reads) begin
-          $error("[%0t][%s] BAD_READ_ADDR got=%0d exp=%0d", $time, tag, r_addr_u, m.reads);
-        end
-        m.rd_addr_pipe[0] <= r_addr_u;
-        m.exp_d_pipe[0]   <= exp_from_mem;
-        m.v_pipe[0]       <= 1'b1;
-        m.reads++;
-      end
-
-      // WRITE must match read from 4 cycles earlier => stage [4]
-      if (w_en && w_we) begin
-        if (!m.v_pipe[4]) begin
-          $error("[%0t][%s] WRITE_WITHOUT_PRIOR_READ addr=%0d", $time, tag, w_addr_u);
-        end else begin
-          if (w_addr_u !== m.rd_addr_pipe[4]) begin
-            $error("[%0t][%s] BAD_WRITE_ADDR got=%0d exp=%0d", $time, tag, w_addr_u, m.rd_addr_pipe[4]);
-          end
-          if (w_d_s !== $signed(m.exp_d_pipe[4])) begin
-            $error("[%0t][%s] BAD_WRITE_DATA @%0d got=%0d exp=%0d",
-                   $time, tag, w_addr_u, w_d_s, m.exp_d_pipe[4]);
-          end
-        end
-        m.writes++;
-      end
-
-      if (done) begin
-        m.done_seen = 1;
-        m.done_cycle_count++;
-        if (m.done_cycle_count > 1) $error("[%0t][%s] done not 1-cycle", $time, tag);
-      end
-      if (!done) m.done_cycle_count = 0;
-    end
-  endtask
-
-  task automatic mon_step_0();
-    mon_step_common(
-      m0,
-      start0, done0,
-      r_en0,  int'(r_addr0),
-      relu32($signed(bram0.mem[r_addr0])),
-      w_en0, w_we0,
-      int'(w_addr0),
-      int'($signed(w_d0)),
-      "DUT0"
-    );
-  endtask
-
-  task automatic mon_step_1();
-    mon_step_common(
-      m1,
-      start1, done1,
-      r_en1,  int'(r_addr1),
-      relu32($signed(bram1.mem[r_addr1])),
-      w_en1, w_we1,
-      int'(w_addr1),
-      int'($signed(w_d1)),
-      "DUT1"
-    );
-  endtask
-
-  task automatic mon_step_2();
-    mon_step_common(
-      m2,
-      start2, done2,
-      r_en2,  int'(r_addr2),
-      relu32($signed(bram2.mem[r_addr2])),
-      w_en2, w_we2,
-      int'(w_addr2),
-      int'($signed(w_d2)),
-      "DUT2"
-    );
-  endtask
-
-  always_ff @(posedge clk) begin
-    mon_step_0();
-    mon_step_1();
-    mon_step_2();
-  end
-
-  // ============================================================
-  // Runner (unchanged)
+  // Runner
   // ============================================================
   task automatic run_one(
     input string name,
@@ -409,22 +413,22 @@ module tb_relu;
 
     errs = 0;
     if (which==0) begin
-      if (m0.reads  != N0) begin $display("[%s] BAD_READ_COUNT got=%0d exp=%0d",  name, m0.reads,  N0); errs++; end
-      if (m0.writes != N0) begin $display("[%s] BAD_WRITE_COUNT got=%0d exp=%0d", name, m0.writes, N0); errs++; end
+      if (reads0  != N0) begin $display("[%s] BAD_READ_COUNT got=%0d exp=%0d",  name, reads0,  N0); errs++; end
+      if (writes0 != N0) begin $display("[%s] BAD_WRITE_COUNT got=%0d exp=%0d", name, writes0, N0); errs++; end
       for (int i=0;i<N0;i++) if (bram0.mem[i] !== gold0[i]) begin
         $display("[%s] MISMATCH mem[%0d] got=%0d exp=%0d (init=%0d)", name, i, bram0.mem[i], gold0[i], init0[i]);
         errs++;
       end
     end else if (which==1) begin
-      if (m1.reads  != N1) begin $display("[%s] BAD_READ_COUNT got=%0d exp=%0d",  name, m1.reads,  N1); errs++; end
-      if (m1.writes != N1) begin $display("[%s] BAD_WRITE_COUNT got=%0d exp=%0d", name, m1.writes, N1); errs++; end
+      if (reads1  != N1) begin $display("[%s] BAD_READ_COUNT got=%0d exp=%0d",  name, reads1,  N1); errs++; end
+      if (writes1 != N1) begin $display("[%s] BAD_WRITE_COUNT got=%0d exp=%0d", name, writes1, N1); errs++; end
       for (int i=0;i<N1;i++) if (bram1.mem[i] !== gold1[i]) begin
         $display("[%s] MISMATCH mem[%0d] got=%0d exp=%0d (init=%0d)", name, i, bram1.mem[i], gold1[i], init1[i]);
         errs++;
       end
     end else begin
-      if (m2.reads  != N2) begin $display("[%s] BAD_READ_COUNT got=%0d exp=%0d",  name, m2.reads,  N2); errs++; end
-      if (m2.writes != N2) begin $display("[%s] BAD_WRITE_COUNT got=%0d exp=%0d", name, m2.writes, N2); errs++; end
+      if (reads2  != N2) begin $display("[%s] BAD_READ_COUNT got=%0d exp=%0d",  name, reads2,  N2); errs++; end
+      if (writes2 != N2) begin $display("[%s] BAD_WRITE_COUNT got=%0d exp=%0d", name, writes2, N2); errs++; end
       for (int i=0;i<N2;i++) if (bram2.mem[i] !== gold2[i]) begin
         $display("[%s] MISMATCH mem[%0d] got=%0d exp=%0d (init=%0d)", name, i, bram2.mem[i], gold2[i], init2[i]);
         errs++;
@@ -436,7 +440,7 @@ module tb_relu;
   endtask
 
   // ============================================================
-  // Main (unchanged)
+  // Main
   // ============================================================
   initial begin
     start0 = 0; start1 = 0; start2 = 0;

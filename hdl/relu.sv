@@ -49,7 +49,9 @@ module relu #(
     wire issue_next  = (st == WRITE) && (addr != addr_t'(N-1));
 
     assign conv_r_en   = issue_first || issue_next;
-    assign conv_r_addr = issue_next ? (addr + addr_t'(1)) : addr;
+    assign conv_r_addr = issue_first ? addr_t'(0)
+                   : issue_next  ? (addr + addr_t'(1))
+                   : addr;
 
     // Write in WRITE state
     assign conv_w_en   = (st == WRITE);
