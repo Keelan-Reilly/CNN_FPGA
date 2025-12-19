@@ -11,9 +11,9 @@
 # It also optionally talks to the FPGA over UART and compares HW vs golden.
 #
 # Usage examples:
-#   python3 compare_sw_hw_fixed.py --image weights/input_image.bin --weights-dir weights --no-hw
-#   python3 compare_sw_hw_fixed.py --image weights/input_image.bin --weights-dir weights --port /dev/tty.usbmodemXXXX --trials 5
-#   python3 compare_sw_hw_fixed.py --debug-hw-logits ...   (expects HW to emit 'L'+20 bytes then digit)
+#   python python/compare_sw_hw_fixed.py --image weights/input_image.bin --weights-dir weights --no-hw
+#   python python/compare_sw_hw_fixed.py --image weights/input_image.bin --weights-dir weights --port COM5 --trials 5
+#   python python/compare_sw_hw_fixed.py --debug-hw-logits ...   (expects HW to emit 'L'+20 bytes then digit)
 
 import argparse
 import pathlib

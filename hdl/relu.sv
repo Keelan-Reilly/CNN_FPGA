@@ -1,6 +1,3 @@
-`timescale 1ns/1ps
-`default_nettype none
-
 (* keep_hierarchy = "yes" *)
 module relu #(
     parameter int DATA_WIDTH = 16,
@@ -107,4 +104,3 @@ module relu #(
 
 endmodule
 
-`default_nettype wire
