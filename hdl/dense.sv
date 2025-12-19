@@ -161,6 +161,11 @@ module dense #(
 
   assign in_en = (state == READ);
 
+  `ifndef SYNTHESIS
+    bit sim_quiet;
+    initial sim_quiet = $test$plusargs("quiet");  // enable with +quiet
+  `endif
+
   // =============================== FSM ===============================
   always_ff @(posedge clk) begin
     if (reset) begin
@@ -288,11 +293,13 @@ module dense #(
 
         // ------------------------------ FINISH -----------------------
         FINISH: begin
-                 done  <= 1'b1;
-                 if (DBG_ENABLE)
-                   $display("[%0t][DONE ] dense complete.", $time);
-                 state <= IDLE;
-               end
+          done  <= 1'b1;
+        `ifndef SYNTHESIS
+          if (DBG_ENABLE && !sim_quiet)
+            $display("[%0t][DONE ] dense complete.", $time);
+        `endif
+          state <= IDLE;
+        end
 
       endcase
     end

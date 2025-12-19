@@ -421,7 +421,8 @@ module top_level #(
             if (argmax_done)  t_argmax <= cycle_ctr;
             if (tx_start)     t_tx     <= cycle_ctr;
 
-            if (tx_start_q) begin
+            // +quiet suppresses ALL these sim prints
+            if (tx_start_q && !$test$plusargs("quiet")) begin
                 $display("---- Performance Report ----");
                 $display("Frame cycles: %0d", t_tx - t_start);
                 $display(" conv  = %0d",      t_conv   - t_start);
@@ -433,7 +434,7 @@ module top_level #(
                 $display("----------------------------");
             end
 
-            if (dense_done) begin
+            if (dense_done && !$test$plusargs("quiet")) begin
                 integer k;
                 integer maxk;
                 logic signed [DATA_WIDTH-1:0] maxv;
