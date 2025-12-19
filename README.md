@@ -16,11 +16,18 @@ This project demonstrates how fixed-point neural network inference can be implem
 
 ### Key Results
 
-- **Total latency:** ~435939 cycles  
-  → **~4.36 ms @ 100 MHz**
-- **Prediction:** Matches software reference (e.g. digit `7`, UART byte `0x37`)
-- **Top-level module:** `hdl/top_level.sv`
-- **Verification:** Cycle-accurate Verilator simulation with per-stage timing
+- **Compute latency (frame_loaded → tx_start):** ~465,732 cycles  
+  → **~4.66 ms @ 100 MHz** (pipeline only)
+
+- **End-to-end latency (UART RX image + compute + UART TX):** ~7,281,850 cycles @ 115,200 baud  
+  → **~72.8 ms @ 100 MHz** (I/O dominates)
+
+- **Accuracy (MNIST test):**
+  - **Float PyTorch model (early convergence, 1 Epoch):** 94.26%
+  - **Quantised RTL (Verilator batch, 1,000 images):** 92.20%
+
+- **Top-level module:** `hdl/top_level.sv`  
+- **Verification:** Cycle-accurate Verilator + fixed-point Python golden model
 
 ---
 ### Architecture Pipeline

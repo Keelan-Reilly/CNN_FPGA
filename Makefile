@@ -38,7 +38,7 @@ run_full: ARGS?=
 run_full: run
 
 run_batch: TB=$(TB_BATCH)
-run_batch: ARGS= --images data/MNIST/raw/t10k-images-idx3-ubyte --labels data/MNIST/raw/t10k-labels-idx1-ubyte --outdir batch_out --count 1000 --progress 50 --quiet +quiet
+run_batch: ARGS= --images data/MNIST/raw/t10k-images-idx3-ubyte --labels data/MNIST/raw/t10k-labels-idx1-ubyte --outdir batch_out --count 100 --progress 50 --quiet +quiet
 run_batch: run
 
 run_batch_vcd: TB=$(TB_BATCH)
