@@ -281,7 +281,8 @@ module top_level #(
         .OUT_DIM(NUM_CLASSES),
         .WEIGHTS_FILE(FC_W_FILE),
         .BIASES_FILE(FC_B_FILE),
-        .POST_SHIFT(0)
+        .POST_SHIFT(0),
+        .LAT(2)
     ) u_dense (
         .clk, .reset,
         .start(dense_start),

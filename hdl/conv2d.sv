@@ -313,15 +313,20 @@ module conv2d #(
               // Splitting MUL and ADD improves FPGA timing closure.
               // ---------------------------------------------------------
               ACCUM_MUL: begin
-                    logic signed [2*DATA_WIDTH-1:0] prod_now;
-                    logic signed [ACCW-1:0]         prod_ext;
+                            logic signed [DATA_WIDTH-1:0] pix_s;
+                            logic signed [DATA_WIDTH-1:0] w_s;
+                            logic signed [2*DATA_WIDTH-1:0] prod_now;
+                            logic signed [ACCW-1:0]         prod_ext;
 
-                    prod_now = (pix_valid_q3 ? if_q_q : '0) * weight_q;
-                    prod_ext = {{(ACCW-2*DATA_WIDTH){prod_now[2*DATA_WIDTH-1]}}, prod_now};
+                            pix_s = pix_valid_q3 ? if_q_q : '0;     // pix_s is signed => correct sign interpretation
+                            w_s   = weight_q;
 
-                    prod_ext_q <= prod_ext;      // register product for next state
-                    state      <= ACCUM_ADD;
-              end
+                            prod_now = pix_s * w_s;
+
+                            prod_ext = {{(ACCW-2*DATA_WIDTH){prod_now[2*DATA_WIDTH-1]}}, prod_now};
+                            prod_ext_q <= prod_ext;
+                            state <= ACCUM_ADD;
+                        end
 
               // ---------------------------------------------------------
               // ACCUM_ADD: accumulate registered product, advance tap
@@ -343,6 +348,10 @@ module conv2d #(
                         // final fixed-point downscale
                         shifted = (acc + prod_ext_q) >>> FRAC_BITS;
 
+                        if (shifted > S_MAXX || shifted < S_MINX) begin
+                            $display("[%0t][CONV_SAT] oc=%0d r=%0d c=%0d acc_pre=%0d prod=%0d shifted=%0d",
+                                    $time, oc, orow, ocol, acc, prod_ext_q, shifted);
+                            end
                         // saturate/clamp to DATA_WIDTH
                         if      (shifted > S_MAXX) res_q <= S_MAX;
                         else if (shifted < S_MINX) res_q <= S_MIN;

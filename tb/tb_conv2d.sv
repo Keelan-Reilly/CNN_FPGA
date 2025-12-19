@@ -1,94 +1,163 @@
 `timescale 1ns/1ps
 `default_nettype none
 
-// 1-cycle synchronous BRAM read model for IFMAP (matches conv2d timing)
 module tb_conv2d;
-  // Params (FRAC_BITS=0 -> pure integer math)
-  localparam int DATA_WIDTH=16, FRAC_BITS=0;
-  localparam int IC=1, OC=1, K=3, H=3, W=3;
+
+  // ----------------------------
+  // Configuration
+  // ----------------------------
+  localparam int DATA_WIDTH = 16;
+  localparam int FRAC_BITS  = 0;
+
+  localparam int IC = 2;
+  localparam int OC = 3;
+
+  localparam int K  = 3;
+  localparam int H  = 4;
+  localparam int W  = 4;
+
   localparam int IF_SZ = IC*H*W;
   localparam int OF_SZ = OC*H*W;
 
-  // Clock/reset (init + deassert)
-  logic clk=1'b0, reset=1'b1;
+  localparam int IF_AW = (IF_SZ<=1) ? 1 : $clog2(IF_SZ);
+  localparam int OF_AW = (OF_SZ<=1) ? 1 : $clog2(OF_SZ);
+
+  // Saturation bounds for DATA_WIDTH
+  localparam logic signed [DATA_WIDTH-1:0] S_MAX = (1 <<< (DATA_WIDTH-1)) - 1;
+  localparam logic signed [DATA_WIDTH-1:0] S_MIN = - (1 <<< (DATA_WIDTH-1));
+
+  // ----------------------------
+  // Clock/reset
+  // ----------------------------
+  logic clk = 1'b0;
+  logic reset = 1'b1;
+
   initial begin
-    // VCD
     $dumpfile("wave.vcd");
     $dumpvars(0, tb_conv2d);
+    forever #5 clk = ~clk;
+  end
 
-    fork
-      forever #5 clk = ~clk;   // 100 MHz
-    join_none
-
+  initial begin
     repeat (4) @(posedge clk);
     reset = 1'b0;
   end
 
-  // Make tiny weight/bias files before $readmemh runs in the DUT
-  initial begin
-    integer f;
-    f = $fopen("tb_conv_w.mem","w");
-      repeat (9) $fdisplay(f, "%0h", 16'd1); // 3x3 all-ones
-    $fclose(f);
-    f = $fopen("tb_conv_b.mem","w");
-      $fdisplay(f, "%0h", 16'd0);
-    $fclose(f);
+  // ----------------------------
+  // Helper: linear indexing CHW
+  // ----------------------------
+  function automatic int lin3(input int ch, input int r, input int c, input int HH, input int WW);
+    return (ch*HH + r)*WW + c;
+  endfunction
+
+  // ----------------------------
+  // Weight/bias generation
+  // ----------------------------
+  localparam int W_DEPTH = OC*IC*K*K;
+
+  logic signed [DATA_WIDTH-1:0] tbW [0:W_DEPTH-1];
+  logic signed [DATA_WIDTH-1:0] tbB [0:OC-1];
+
+  function automatic int w_addr(input int oc_i, input int ic_i, input int kr_i, input int kc_i);
+    return oc_i*(IC*K*K) + ic_i*(K*K) + kr_i*K + kc_i;
+  endfunction
+
+  initial begin : make_weight_bias_files
+    integer fW, fB;
+    int a;
+
+    // biases = 0
+    for (int oc_i=0; oc_i<OC; oc_i++) tbB[oc_i] = '0;
+
+    // weights
+    for (int oc_i=0; oc_i<OC; oc_i++) begin
+      for (int ic_i=0; ic_i<IC; ic_i++) begin
+        for (int kr_i=0; kr_i<K; kr_i++) begin
+          for (int kc_i=0; kc_i<K; kc_i++) begin
+            a = w_addr(oc_i, ic_i, kr_i, kc_i);
+
+            if (oc_i == 0) begin
+              tbW[a] = $signed((oc_i+1)*11 + (ic_i+1)*7 + kr_i*3 + kc_i);
+            end else if (oc_i == 1) begin
+              tbW[a] = $signed(16'sd3000);
+            end else begin
+              tbW[a] = $signed(-16'sd3000);
+            end
+          end
+        end
+      end
+    end
+
+    fW = $fopen("tb_conv_w.mem","w");
+    if (fW==0) $fatal(1, "TB: cannot open tb_conv_w.mem for write");
+    for (int i=0; i<W_DEPTH; i++) $fdisplay(fW, "%0h", tbW[i]);
+    $fclose(fW);
+
+    fB = $fopen("tb_conv_b.mem","w");
+    if (fB==0) $fatal(1, "TB: cannot open tb_conv_b.mem for write");
+    for (int i=0; i<OC; i++) $fdisplay(fB, "%0h", tbB[i]);
+    $fclose(fB);
   end
 
-  // IFMAP memory (1-cycle read latency), initialized to values 1..9
+  // ----------------------------
+  // IFMAP memory model
+  // ----------------------------
   logic signed [DATA_WIDTH-1:0] ifmem [0:IF_SZ-1];
-  initial begin
-    int idx = 0;
-    for (int r=0; r<H; r++) begin
-      for (int c=0; c<W; c++) begin
-        /* verilator lint_off WIDTHTRUNC */
-        ifmem[idx] = $signed(idx+1); // narrow 32->16 intentionally
-        /* verilator lint_on  WIDTHTRUNC */
-        idx++;
+
+  initial begin : init_ifmap
+    int idx;
+    int v;
+    idx = 0;
+    for (int ic_i=0; ic_i<IC; ic_i++) begin
+      for (int r=0; r<H; r++) begin
+        for (int c=0; c<W; c++) begin
+          v = (r*W + c + 1);
+          if (ic_i == 0) ifmem[idx] = $signed(v);
+          else           ifmem[idx] = $signed(-v);
+          idx++;
+        end
       end
     end
   end
 
-  // Wires to DUT (IFMAP side)
-  localparam int IF_AW = (IF_SZ<=1)?1:$clog2(IF_SZ);
+  // DUT IF interface
   logic [IF_AW-1:0] if_addr;
   logic             if_en;
   logic signed [DATA_WIDTH-1:0] if_q;
 
-  // 1-cycle synchronous BRAM read model (output updates only on if_en)
-  logic [IF_AW-1:0] if_addr_q;
+  // 1-cycle BRAM
+  logic [IF_AW-1:0]             if_addr_q;
   logic signed [DATA_WIDTH-1:0] if_q_reg;
 
   always_ff @(posedge clk) begin
     if (if_en) begin
-      if_addr_q <= if_addr;          // captured for debug / visibility
-      if_q_reg  <= ifmem[if_addr];   // data becomes valid next cycle (registered)
+      if_addr_q <= if_addr;
+      if_q_reg  <= ifmem[if_addr];
     end
   end
-
   assign if_q = if_q_reg;
 
-    // debug after updates settle
-    always @(posedge clk) if (if_en)
-    $strobe("[%0t] TB  : if_en=1 addr=%0d -> if_q_next=%0d", $time, if_addr, ifmem[if_addr]);
+  // ----------------------------
+  // Capture OFMAP writes
+  // ----------------------------
+  logic [OF_AW-1:0]              conv_addr;
+  logic                          conv_en, conv_we;
+  logic signed [DATA_WIDTH-1:0]  conv_d;
 
-  // Capture CONV writes
-  localparam int OF_AW = (OF_SZ<=1)?1:$clog2(OF_SZ);
-  logic [OF_AW-1:0]     conv_addr;
-  logic                 conv_en, conv_we;
-  logic signed [DATA_WIDTH-1:0] conv_d;
+  logic signed [DATA_WIDTH-1:0]  ofmem [0:OF_SZ-1];
+  bit                            wrote [0:OF_SZ-1];
 
+  int write_count;
+  bit done_seen;
 
-  logic signed [DATA_WIDTH-1:0] ofmem [0:OF_SZ-1];
-
-  always_ff @(posedge clk) begin
-    if (conv_en && conv_we) ofmem[conv_addr] <= conv_d;
-  end
-
+  // ----------------------------
   // Start/done
+  // ----------------------------
   logic start, done;
 
+  // ----------------------------
   // DUT
+  // ----------------------------
   conv2d #(
     .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
     .IN_CHANNELS(IC), .OUT_CHANNELS(OC),
@@ -107,90 +176,113 @@ module tb_conv2d;
     .conv_we(conv_we),
     .conv_d(conv_d),
     .done(done)
-    );
+  );
 
-  // Helpers
-  function int lin3(input int ch,input int r,input int c, input int HH, input int WW);
-    return (ch*HH + r)*WW + c;
+  // Write capture + protocol assertions
+  always_ff @(posedge clk) begin
+    if (reset) begin
+      write_count <= 0;
+      done_seen   <= 1'b0;
+    end else begin
+      if (done) done_seen <= 1'b1;
+
+      if (conv_en && conv_we) begin
+        if (^conv_addr === 1'bX) $fatal(1, "[%0t] WRITE: conv_addr is X", $time);
+        if (^conv_d    === 1'bX) $fatal(1, "[%0t] WRITE: conv_d is X", $time);
+
+        if (conv_addr >= OF_SZ)  $fatal(1, "[%0t] WRITE: conv_addr OOR %0d", $time, conv_addr);
+        if (done_seen)           $fatal(1, "[%0t] WRITE after done! addr=%0d", $time, conv_addr);
+        if (wrote[conv_addr])    $fatal(1, "[%0t] DUP WRITE addr=%0d", $time, conv_addr);
+
+        wrote[conv_addr] <= 1'b1;
+        ofmem[conv_addr] <= conv_d;
+        write_count      <= write_count + 1;
+      end
+    end
+  end
+
+  // ----------------------------
+  // Golden model
+  // ----------------------------
+  logic signed [DATA_WIDTH-1:0] gold [0:OF_SZ-1];
+
+  function automatic logic signed [DATA_WIDTH-1:0] clamp_to_dw(input longint signed x);
+    logic signed [DATA_WIDTH-1:0] y;
+    begin
+      if (x > $signed(S_MAX)) y = S_MAX;
+      else if (x < $signed(S_MIN)) y = S_MIN;
+      else y = x[DATA_WIDTH-1:0];
+      return y;
+    end
   endfunction
 
-  // ---- GOLDEN compute & print (time 0) ----
-  logic signed [DATA_WIDTH-1:0] gold [0:OF_SZ-1];
-  initial begin
-    automatic int pad=(K-1)/2;
-    #1; // let ifmem init
-    for (int r=0;r<H;r++) begin
-      for (int c=0;c<W;c++) begin
-        int acc=0;
-        for (int kr=0;kr<K;kr++) for (int kc=0;kc<K;kc++) begin
-          int ir = r + kr - pad;
-          int ic = c + kc - pad;
-          if (ir>=0 && ir<H && ic>=0 && ic<W)
-            acc += ifmem[lin3(0,ir,ic,H,W)];
-        end
-        /* verilator lint_off WIDTHTRUNC */
-        gold[lin3(0,r,c,H,W)] = $signed(acc);
-        /* verilator lint_on  WIDTHTRUNC */
-      end
-    end
-    dump_matrix("GOLDEN REF", gold);
-  end
+  task automatic compute_golden(output int sat_pos, output int sat_neg);
+    int pad;
+    longint signed acc;
+    longint signed shifted;
+    logic signed [DATA_WIDTH-1:0] y;
+    int if_idx;
+    int widx;
 
-  // Test sequence
-  initial begin
-    int guard;
-    int errs;
+    sat_pos = 0;
+    sat_neg = 0;
+    pad = (K-1)/2;
 
-    @(negedge reset);
-    repeat(2) @(posedge clk);
-    start = 1'b1; @(posedge clk); start = 1'b0;  // blocking in initial
+    for (int oc_i=0; oc_i<OC; oc_i++) begin
+      for (int r=0; r<H; r++) begin
+        for (int c=0; c<W; c++) begin
+          acc = 0;
+          acc = $signed(tbB[oc_i]);
 
-    // Wait for completion (timeout guard)
-    guard = 0;
-    $display("[%0t] waiting for done...", $time);
-    while (!done && guard < 10000) begin
-      @(posedge clk);
-      guard++;
-    end
-    $display("[%0t] done=%0b after %0d cycles", $time, done, guard);
-    if (!done) begin
-      $error("conv2d: timeout waiting for done");
-      $finish;
-    end
+          for (int ic_i=0; ic_i<IC; ic_i++) begin
+            for (int kr_i=0; kr_i<K; kr_i++) begin
+              for (int kc_i=0; kc_i<K; kc_i++) begin
+                int ir, icc;
+                ir = r + kr_i - pad;
+                icc = c + kc_i - pad;
+                if (ir>=0 && ir<H && icc>=0 && icc<W) begin
+                  if_idx = lin3(ic_i, ir, icc, H, W);
+                  widx   = w_addr(oc_i, ic_i, kr_i, kc_i);
+                  acc += $signed(ifmem[if_idx]) * $signed(tbW[widx]);
+                end
+              end
+            end
+          end
 
-    // >>> Print the DUT output now that it's complete <<<
-    dump_matrix("HW OUTPUT", ofmem);
+          if (FRAC_BITS == 0) shifted = acc;
+          else                shifted = (acc >>> FRAC_BITS);
 
+          y = clamp_to_dw(shifted);
+          gold[lin3(oc_i, r, c, H, W)] = y;
 
-    // Compare all pixels
-    errs = 0;
-    for (int r=0;r<H;r++) begin
-      for (int c=0;c<W;c++) begin
-        int idx = lin3(0,r,c,H,W);
-        if (ofmem[idx] !== gold[idx]) begin
-          $display("Mismatch at (%0d,%0d): got %0d, exp %0d", r,c, ofmem[idx], gold[idx]);
-          errs++;
+          if (y == S_MAX) sat_pos++;
+          if (y == S_MIN) sat_neg++;
         end
       end
     end
+  endtask
 
-    if (errs==0) $display("PASS: conv2d 3x3 all-ones kernel matches golden.");
-    else         $error("FAIL: conv2d mismatches=%0d", errs);
+  task automatic clear_outputs();
+    for (int i=0; i<OF_SZ; i++) begin
+      ofmem[i] = '0;
+      wrote[i] = 1'b0;
+    end
+    write_count = 0;
+    done_seen   = 1'b0;
+  endtask
 
-    repeat (5) @(posedge clk); // give tracer a couple cycles
-    $finish;
-  end
-
-  task automatic dump_matrix
-  (
+  task automatic dump_chan(
     input string tag,
+    input int ch,
     input logic signed [DATA_WIDTH-1:0] arr [0:OF_SZ-1]
   );
-    $display("\n--- %s ---", tag);
+    $display("\n--- %s (ch=%0d) ---", tag, ch);
     for (int r=0; r<H; r++) begin
-      string line = "";
+      string line;
+      line = "";
       for (int c=0; c<W; c++) begin
-        int idx = lin3(0,r,c,H,W);
+        int idx;
+        idx = lin3(ch, r, c, H, W);
         line = {line, $sformatf("%0d%s", arr[idx], (c==W-1) ? "" : " ")};
       end
       $display("%s", line);
@@ -198,5 +290,116 @@ module tb_conv2d;
     $display("--- end %s ---\n", tag);
   endtask
 
+  task automatic check_results(input string run_tag, input int exp_sat_pos, input int exp_sat_neg);
+    int errs;
+    int got_sat_pos;
+    int got_sat_neg;
+
+    errs = 0;
+    got_sat_pos = 0;
+    got_sat_neg = 0;
+
+    // coverage: every address written exactly once
+    for (int i=0; i<OF_SZ; i++) begin
+      if (!wrote[i]) begin
+        $display("[%s] MISSING WRITE addr=%0d", run_tag, i);
+        errs++;
+      end
+    end
+    if (write_count != OF_SZ) begin
+      $display("[%s] write_count mismatch: got %0d exp %0d", run_tag, write_count, OF_SZ);
+      errs++;
+    end
+
+    // compare
+    for (int oc_i=0; oc_i<OC; oc_i++) begin
+      for (int r=0; r<H; r++) begin
+        for (int c=0; c<W; c++) begin
+          int idx;
+          idx = lin3(oc_i, r, c, H, W);
+          if (ofmem[idx] !== gold[idx]) begin
+            $display("[%s] MISMATCH oc=%0d r=%0d c=%0d got=%0d exp=%0d",
+                     run_tag, oc_i, r, c, ofmem[idx], gold[idx]);
+            errs++;
+          end
+        end
+      end
+    end
+
+    // saturation counts (informational)
+    for (int i=0; i<OF_SZ; i++) begin
+      if (ofmem[i] == S_MAX) got_sat_pos++;
+      if (ofmem[i] == S_MIN) got_sat_neg++;
+    end
+    if (got_sat_pos != exp_sat_pos || got_sat_neg != exp_sat_neg) begin
+      $display("[%s] SAT COUNT NOTE: got (+%0d,-%0d) exp (+%0d,-%0d)",
+               run_tag, got_sat_pos, got_sat_neg, exp_sat_pos, exp_sat_neg);
+    end
+
+    if (errs == 0) begin
+      $display("[%s] PASS", run_tag);
+    end else begin
+      $display("[%s] FAIL errs=%0d", run_tag, errs);
+      for (int oc_i=0; oc_i<OC; oc_i++) begin
+        dump_chan({run_tag," HW"}, oc_i, ofmem);
+        dump_chan({run_tag," GOLD"}, oc_i, gold);
+      end
+      $fatal;
+    end
+  endtask
+
+  task automatic run_once(input string run_tag);
+    int guard;
+
+    clear_outputs();
+
+    // start pulse
+    start = 1'b0;
+    repeat (2) @(posedge clk);
+    start = 1'b1;
+    @(posedge clk);
+    start = 1'b0;
+
+    // illegal extra start while busy (should not break anything)
+    repeat (7) @(posedge clk);
+    start = 1'b1;
+    @(posedge clk);
+    start = 1'b0;
+
+    guard = 0;
+    while (!done && guard < 200000) begin
+      @(posedge clk);
+      guard++;
+    end
+    if (!done) $fatal(1, "[%s] TIMEOUT waiting for done", run_tag);
+
+    // ensure no trailing write after done
+    @(posedge clk);
+  endtask
+
+  // ----------------------------
+  // Main
+  // ----------------------------
+  initial begin : main
+    int exp_sat_pos, exp_sat_neg;
+    start = 1'b0;
+
+    @(negedge reset);
+
+    compute_golden(exp_sat_pos, exp_sat_neg);
+    $display("TB: expected saturation counts: +SAT=%0d -SAT=%0d (OF_SZ=%0d)",
+             exp_sat_pos, exp_sat_neg, OF_SZ);
+
+    run_once("RUN1");
+    check_results("RUN1", exp_sat_pos, exp_sat_neg);
+
+    run_once("RUN2");
+    check_results("RUN2", exp_sat_pos, exp_sat_neg);
+
+    $display("ALL TESTS PASSED");
+    $finish;
+  end
 
 endmodule
+
+`default_nettype wire

@@ -159,6 +159,8 @@ module dense #(
     return (o == DBG_HEAD_ONLY_O);
   endfunction
 
+  assign in_en = (state == READ);
+
   // =============================== FSM ===============================
   always_ff @(posedge clk) begin
     if (reset) begin
@@ -167,7 +169,6 @@ module dense #(
 
       o <= 0; i <= 0; acc <= '0;
 
-      in_en   <= 1'b0;
       in_addr <= '0;
 
       w_base   <= '0;
@@ -179,7 +180,6 @@ module dense #(
 
     end else begin
       done  <= 1'b0;
-      in_en <= 1'b0;
 
       unique case (state)
 
@@ -203,7 +203,6 @@ module dense #(
 
         // ------------------------------ READ -------------------------
         READ: begin
-                in_en    <= 1'b1;                 // request x[i]
                 w_reg    <= W[w_addr_q];          // latch W[o,i]
                 wait_cnt <= (LAT==0) ? '0 : (LAT-1);
 
