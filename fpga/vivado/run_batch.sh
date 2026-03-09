@@ -103,7 +103,7 @@ if [[ -n "${VIVADO_BAT_WIN}" ]]; then
   RUN_DIR_WIN="$(wslpath -w "${RUN_DIR}")"
   XDC_WIN="$(wslpath -w "${XDC}")"
 
-  exec cmd.exe /C "\"${VIVADO_BAT_WIN}\" -mode batch -source \"${TCL_SCRIPT_WIN}\" -tclargs \"${REPO_ROOT_WIN}\" \"${RUN_DIR_WIN}\" \"${PART}\" \"${TOP}\" \"${XDC_WIN}\" \"${CLOCK_PERIOD_NS}\" \"${JOBS}\" \"${GENERIC_CSV}\""
+  exec cmd.exe /C "${VIVADO_BAT_WIN} -mode batch -source ${TCL_SCRIPT_WIN} -tclargs ${REPO_ROOT_WIN} ${RUN_DIR_WIN} ${PART} ${TOP} ${XDC_WIN} ${CLOCK_PERIOD_NS} ${JOBS} ${GENERIC_CSV}"
 fi
 
 if ! command -v "${VIVADO_BIN}" >/dev/null 2>&1; then

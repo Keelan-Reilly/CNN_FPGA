@@ -22,7 +22,6 @@ data/MNIST/
 data/MNIST/**
 
 # Generated memory files
-weights/*.mem
 weights/*.bin
 
 # PyTorch or Python cache
