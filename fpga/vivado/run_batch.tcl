@@ -74,8 +74,6 @@ if { $generic_csv ne "" } {
   }
 }
 
-set generic_str [join $generic_tokens " "]
-
 create_project -force run_project $project_dir -part $part
 set_param general.maxThreads $jobs
 set_property target_language Verilog [current_project]
@@ -97,12 +95,12 @@ if { $clock_period_ns ne "" } {
 }
 
 set synth_cmd [list synth_design -top $top_module -part $part]
-if { $generic_str ne "" } {
-  lappend synth_cmd -generic $generic_str
+foreach generic_item $generic_tokens {
+  lappend synth_cmd -generic $generic_item
 }
 puts "INFO: Running synth command: $synth_cmd"
 cd $project_dir
-eval $synth_cmd
+{*}$synth_cmd
 
 report_utilization -file [file join $reports_dir post_synth_utilization.rpt]
 report_timing_summary -file [file join $reports_dir post_synth_timing_summary.rpt] -max_paths 20
