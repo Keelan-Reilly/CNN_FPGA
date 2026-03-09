@@ -107,30 +107,96 @@ Output(Example)
 Agreement: 5/5
 ```
 
+## FPGA Experiment Automation (Vivado Batch)
+
+- Baseline run:
+  - `python3 experiments/run_fpga_experiments.py --config experiments/configs/baseline_fpga.json`
+- Sweep run:
+  - `python3 experiments/run_fpga_experiments.py --config experiments/configs/sweep_bitwidth.json`
+- Makefile wrappers:
+  - `make fpga_experiments`
+  - `make fpga_experiments_sweep`
+
+Outputs are written only under `results/`:
+- per-run: `results/fpga/runs/<experiment_id>/<run_id>/`
+- aggregates: `results/fpga/aggregates/<experiment_id>.json` and `.csv`
+
+Each run writes:
+- `config_resolved.json`
+- `run_meta.json`
+- `vivado.log`
+- `reports/`
+- `metrics.json`
+
+Supported sweep/build parameters (top-level generics):
+- `DATA_WIDTH`
+- `FRAC_BITS`
+- `CLK_FREQ_HZ`
+- `BAUD_RATE`
+
+Metric notes:
+- `WNS` is parsed from Vivado post-route timing summary.
+- `fmax_mhz_est` is computed from `clock_period_target_ns` and parsed `WNS`:
+  `fmax ≈ 1000 / (target_period - WNS)` when defined.
+
+## FPGA Analysis and Plotting
+
+CLI summary (includes failed runs):
+- `python3 analysis/fpga_summary.py --experiment-id baseline_fpga --include-failed`
+  - Default experiment id is `baseline_fpga` if `--experiment-id` is omitted.
+
+Plot generation:
+- `python3 analysis/fpga_plot.py --experiment-id sweep_bitwidth`
+  - Default experiment id is `baseline_fpga` if `--experiment-id` is omitted.
+- Optional controls:
+  - `--x-param DATA_WIDTH`
+  - `--group-by FRAC_BITS`
+  - `--filter FRAC_BITS=7`
+  - Requires `matplotlib` in the Python environment.
+
+Makefile wrappers:
+- `make fpga_summary EXP=sweep_bitwidth`
+- `make fpga_plots EXP=sweep_bitwidth`
+
+Plot output path:
+- `results/fpga/plots/<experiment_id>/`
+
+Currently generated architecture-study plots (when data exists in aggregate):
+- `Fmax vs swept parameter`
+- `LUT vs swept parameter`
+- `FF vs swept parameter`
+- `DSP vs swept parameter`
+- `BRAM vs swept parameter`
+- `WNS vs swept parameter`
+- area-performance scatters: `Fmax vs LUT/FF/DSP/BRAM`
+
+Not currently generated (missing metrics in aggregate dataset):
+- throughput plots
+- end-to-end latency plots
+- model-vs-measurement plots requiring measured accuracy, cycle-level stage latency, or power/energy metrics
+
+# Generated Output Policy
+
+- Canonical generated-output root for new runs: `results/`
+- Verilator batch default output: `results/verilator/batch/`
+- Legacy `artifacts/experiments/` is retained for history only (deprecated for new runs)
+
 # Repository Layout
 
 ```python
 
 .
 ├─ hdl/                     # RTL modules
-│  ├─ top_level.sv          # top-level integration
-│  ├─ conv2d.sv
-│  ├─ relu.sv
-│  ├─ maxpool.sv
-│  ├─ dense.sv
-│  ├─ argmax.sv
-│  ├─ uart.sv               # UART RX/TX (8N1)
-│  ├─ bram_sdp.sv
-│  └─ bram_tdp.sv
-├─ tb/
-│  ├─ tb_testbench.sv       # unit-level testbenches
-│  └─ tb_full_pipeline.cpp  # Verilator harness
-├─ python/
-│  ├─ train.py              # PyTorch model definition/training
-│  ├─ quantise.py           # fixed-point export
-│  ├─ make_image_mem.py     # PNG → .mem / .bin (784 bytes)
-│  ├─ verify_fixed_point.py # fixed-point sanity checks
-│  └─ fpga_infer_uart.py    # host-side UART inference
+├─ tb/                      # SystemVerilog + C++ testbenches (assets in tb/assets/mem/)
+├─ python/                  # training/quantisation/util scripts
+├─ weights/                 # model/input memory images
+├─ fpga/
+│  └─ vivado/               # Vivado batch entrypoint scripts
+├─ experiments/             # experiment orchestration wrappers
+├─ analysis/                # architecture-study analysis assets
+├─ docs/                    # project docs (including remote SSH notes)
+├─ results/                 # canonical generated-output root
+├─ artifacts/               # legacy outputs (deprecated for new runs)
 ├─ Makefile
 └─ README.md     
 

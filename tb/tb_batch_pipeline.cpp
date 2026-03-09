@@ -244,7 +244,7 @@ int main(int argc, char** argv) {
 
     const std::string images_path = arg_value(argc, argv, "--images", "");
     const std::string labels_path = arg_value(argc, argv, "--labels", "");
-    const std::string outdir      = arg_value(argc, argv, "--outdir", "batch_out");
+    const std::string outdir      = arg_value(argc, argv, "--outdir", "results/verilator/batch");
 
     const int start_idx = arg_int(argc, argv, "--start", 0);
     const int count     = arg_int(argc, argv, "--count", 100);

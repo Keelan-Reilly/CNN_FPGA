@@ -88,13 +88,13 @@ module tb_conv2d;
       end
     end
 
-    fW = $fopen("tb_conv_w.mem","w");
-    if (fW==0) $fatal(1, "TB: cannot open tb_conv_w.mem for write");
+    fW = $fopen("tb/assets/mem/tb_conv_w.mem","w");
+    if (fW==0) $fatal(1, "TB: cannot open tb/assets/mem/tb_conv_w.mem for write");
     for (int i=0; i<W_DEPTH; i++) $fdisplay(fW, "%0h", tbW[i]);
     $fclose(fW);
 
-    fB = $fopen("tb_conv_b.mem","w");
-    if (fB==0) $fatal(1, "TB: cannot open tb_conv_b.mem for write");
+    fB = $fopen("tb/assets/mem/tb_conv_b.mem","w");
+    if (fB==0) $fatal(1, "TB: cannot open tb/assets/mem/tb_conv_b.mem for write");
     for (int i=0; i<OC; i++) $fdisplay(fB, "%0h", tbB[i]);
     $fclose(fB);
   end
@@ -162,8 +162,8 @@ module tb_conv2d;
     .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
     .IN_CHANNELS(IC), .OUT_CHANNELS(OC),
     .KERNEL(K), .IMG_SIZE(H),
-    .WEIGHTS_FILE("tb_conv_w.mem"),
-    .BIASES_FILE ("tb_conv_b.mem")
+    .WEIGHTS_FILE("tb/assets/mem/tb_conv_w.mem"),
+    .BIASES_FILE ("tb/assets/mem/tb_conv_b.mem")
   ) dut (
     .clk(clk),
     .reset(reset),

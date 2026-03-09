@@ -1,0 +1,18 @@
+{
+  "experiment_id": "sweep_bitwidth",
+  "vivado": {
+    "part": "xc7a35tcpg236-1",
+    "top": "top_level",
+    "xdc": "CNN_constraints.xdc",
+    "jobs": 4
+  },
+  "clock_period_ns": 10.0,
+  "base_params": {
+    "CLK_FREQ_HZ": 100000000,
+    "BAUD_RATE": 115200
+  },
+  "sweep_parameters": {
+    "DATA_WIDTH": [12, 16],
+    "FRAC_BITS": [6, 7]
+  }
+}

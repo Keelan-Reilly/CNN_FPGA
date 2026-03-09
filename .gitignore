@@ -13,6 +13,9 @@ obj_dir/
 *.csv
 *.out
 *.bin
+batch_out/
+results/**
+!results/.gitkeep
 
 # MNIST data
 data/MNIST/

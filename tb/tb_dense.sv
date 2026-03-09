@@ -159,7 +159,7 @@ module tb_dense;
     int o,i;
 
     // ---------- CASE0 ----------
-    f = $fopen("tb_fc_w_case0.mem","w");
+    f = $fopen("tb/assets/mem/tb_fc_w_case0.mem","w");
     // o0
     $fdisplay(f,"%0h",16'sd1); for (i=1;i<IN_DIM;i++) $fdisplay(f,"%0h",16'sd0);
     // o1
@@ -173,7 +173,7 @@ module tb_dense;
     $fdisplay(f,"%0h",-16'sd1); for (i=1;i<IN_DIM;i++) $fdisplay(f,"%0h",16'sd0);
     $fclose(f);
 
-    f = $fopen("tb_fc_b_case0.mem","w");
+    f = $fopen("tb/assets/mem/tb_fc_b_case0.mem","w");
     $fdisplay(f,"%0h",16'sd2);
     $fdisplay(f,"%0h",-16'sd1);
     $fdisplay(f,"%0h",16'sd3);
@@ -182,18 +182,18 @@ module tb_dense;
     $fclose(f);
 
     // ---------- CASE1 (+SAT) ----------
-    f = $fopen("tb_fc_w_case1.mem","w");
+    f = $fopen("tb/assets/mem/tb_fc_w_case1.mem","w");
     for (o=0;o<OUT_DIM;o++) for (i=0;i<IN_DIM;i++) $fdisplay(f,"%0h",16'sd32767);
     $fclose(f);
-    f = $fopen("tb_fc_b_case1.mem","w");
+    f = $fopen("tb/assets/mem/tb_fc_b_case1.mem","w");
     for (o=0;o<OUT_DIM;o++) $fdisplay(f,"%0h",16'sd32767);
     $fclose(f);
 
     // ---------- CASE2 (-SAT) ----------
-    f = $fopen("tb_fc_w_case2.mem","w");
+    f = $fopen("tb/assets/mem/tb_fc_w_case2.mem","w");
     for (o=0;o<OUT_DIM;o++) for (i=0;i<IN_DIM;i++) $fdisplay(f,"%0h",-16'sd32768);
     $fclose(f);
-    f = $fopen("tb_fc_b_case2.mem","w");
+    f = $fopen("tb/assets/mem/tb_fc_b_case2.mem","w");
     for (o=0;o<OUT_DIM;o++) $fdisplay(f,"%0h",-16'sd32768);
     $fclose(f);
 
@@ -262,8 +262,8 @@ module tb_dense;
     .DATA_WIDTH(DW), .FRAC_BITS(FRAC_BITS),
     .IN_DIM(IN_DIM), .OUT_DIM(OUT_DIM),
     .POST_SHIFT(POST_SHIFT),
-    .WEIGHTS_FILE("tb_fc_w_case0.mem"),
-    .BIASES_FILE ("tb_fc_b_case0.mem"),
+    .WEIGHTS_FILE("tb/assets/mem/tb_fc_w_case0.mem"),
+    .BIASES_FILE ("tb/assets/mem/tb_fc_b_case0.mem"),
     .LAT(DUT_LAT0),
     .DBG_ENABLE(0)
   ) dut0 (
@@ -276,8 +276,8 @@ module tb_dense;
     .DATA_WIDTH(DW), .FRAC_BITS(FRAC_BITS),
     .IN_DIM(IN_DIM), .OUT_DIM(OUT_DIM),
     .POST_SHIFT(POST_SHIFT),
-    .WEIGHTS_FILE("tb_fc_w_case1.mem"),
-    .BIASES_FILE ("tb_fc_b_case1.mem"),
+    .WEIGHTS_FILE("tb/assets/mem/tb_fc_w_case1.mem"),
+    .BIASES_FILE ("tb/assets/mem/tb_fc_b_case1.mem"),
     .LAT(DUT_LAT1),
     .DBG_ENABLE(0)
   ) dut1 (
@@ -290,8 +290,8 @@ module tb_dense;
     .DATA_WIDTH(DW), .FRAC_BITS(FRAC_BITS),
     .IN_DIM(IN_DIM), .OUT_DIM(OUT_DIM),
     .POST_SHIFT(POST_SHIFT),
-    .WEIGHTS_FILE("tb_fc_w_case2.mem"),
-    .BIASES_FILE ("tb_fc_b_case2.mem"),
+    .WEIGHTS_FILE("tb/assets/mem/tb_fc_w_case2.mem"),
+    .BIASES_FILE ("tb/assets/mem/tb_fc_b_case2.mem"),
     .LAT(DUT_LAT2),
     .DBG_ENABLE(0)
   ) dut2 (
@@ -387,18 +387,18 @@ module tb_dense;
     logic signed [DW-1:0] y_hw [0:OUT_DIM-1];
 
     if (which==0) begin
-      $readmemh("tb_fc_w_case0.mem", Wimg);
-      $readmemh("tb_fc_b_case0.mem", Bimg);
+      $readmemh("tb/assets/mem/tb_fc_w_case0.mem", Wimg);
+      $readmemh("tb/assets/mem/tb_fc_b_case0.mem", Bimg);
       compute_golden(x_case0, Wimg, Bimg, gold, sat_p_exp, sat_n_exp);
       start0 <= 1'b1; @(posedge clk); start0 <= 1'b0;
     end else if (which==1) begin
-      $readmemh("tb_fc_w_case1.mem", Wimg);
-      $readmemh("tb_fc_b_case1.mem", Bimg);
+      $readmemh("tb/assets/mem/tb_fc_w_case1.mem", Wimg);
+      $readmemh("tb/assets/mem/tb_fc_b_case1.mem", Bimg);
       compute_golden(x_case1, Wimg, Bimg, gold, sat_p_exp, sat_n_exp);
       start1 <= 1'b1; @(posedge clk); start1 <= 1'b0;
     end else begin
-      $readmemh("tb_fc_w_case2.mem", Wimg);
-      $readmemh("tb_fc_b_case2.mem", Bimg);
+      $readmemh("tb/assets/mem/tb_fc_w_case2.mem", Wimg);
+      $readmemh("tb/assets/mem/tb_fc_b_case2.mem", Bimg);
       compute_golden(x_case2, Wimg, Bimg, gold, sat_p_exp, sat_n_exp);
       start2 <= 1'b1; @(posedge clk); start2 <= 1'b0;
     end
