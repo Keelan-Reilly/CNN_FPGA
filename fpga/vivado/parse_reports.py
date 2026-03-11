@@ -73,7 +73,7 @@ def parse_timing_summary(text: str) -> dict:
     wns = None
 
     table_match = re.search(
-        r"WNS\(ns\).*?\n\s*[-+| ]+\n\s*\|\s*([-+]?\d+(?:\.\d+)?)\s*\|",
+        r"WNS\(ns\).*?\n\s*[-+| ]+\n\s*([-+]?\d+(?:\.\d+)?)\b",
         text,
         flags=re.DOTALL,
     )
