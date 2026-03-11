@@ -131,6 +131,7 @@ Each run writes:
 Supported sweep/build parameters (top-level generics):
 - `DATA_WIDTH`
 - `FRAC_BITS`
+- `DENSE_OUT_PAR`
 - `CLK_FREQ_HZ`
 - `BAUD_RATE`
 

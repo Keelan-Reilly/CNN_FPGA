@@ -1,5 +1,5 @@
 {
-  "experiment_id": "baseline_fpga",
+  "experiment_id": "sweep_dense_parallel",
   "vivado": {
     "part": "xc7a35tcpg236-1",
     "top": "top_level",
@@ -10,13 +10,10 @@
   "base_params": {
     "DATA_WIDTH": 16,
     "FRAC_BITS": 7,
-    "DENSE_OUT_PAR": 1,
     "CLK_FREQ_HZ": 100000000,
     "BAUD_RATE": 115200
   },
-  "runs": [
-    {
-      "run_id": "baseline_dw16_fb7"
-    }
-  ]
+  "sweep_parameters": {
+    "DENSE_OUT_PAR": [1, 2, 5, 10]
+  }
 }

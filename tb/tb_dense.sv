@@ -247,6 +247,15 @@ module tb_dense;
   logic signed [DW-1:0] out2 [0:OUT_DIM-1];
   logic start2, done2;
 
+  // ---- DUT3 signals ----
+  localparam int DUT3_PAR = 2;
+  localparam int DUT3_EXPECTED_READS = ((OUT_DIM + DUT3_PAR - 1) / DUT3_PAR) * IN_DIM;
+  in_addr_t in_addr3;
+  logic     in_en3;
+  logic signed [DW-1:0] in_q3;
+  logic signed [DW-1:0] out3 [0:OUT_DIM-1];
+  logic start3, done3;
+
   // BRAM models
   tb_vec_bram #(.DW(DW), .DEPTH(IN_DIM), .LAT(BRAM_LAT0), .AW(IN_AW))
     bram0 (.clk, .en(in_en0), .addr(in_addr0), .mem(x_case0), .q(in_q0));
@@ -257,10 +266,14 @@ module tb_dense;
   tb_vec_bram #(.DW(DW), .DEPTH(IN_DIM), .LAT(BRAM_LAT2), .AW(IN_AW))
     bram2 (.clk, .en(in_en2), .addr(in_addr2), .mem(x_case2), .q(in_q2));
 
+  tb_vec_bram #(.DW(DW), .DEPTH(IN_DIM), .LAT(BRAM_LAT0), .AW(IN_AW))
+    bram3 (.clk, .en(in_en3), .addr(in_addr3), .mem(x_case0), .q(in_q3));
+
   // DUTs
   dense #(
     .DATA_WIDTH(DW), .FRAC_BITS(FRAC_BITS),
     .IN_DIM(IN_DIM), .OUT_DIM(OUT_DIM),
+    .DENSE_OUT_PAR(1),
     .POST_SHIFT(POST_SHIFT),
     .WEIGHTS_FILE("tb/assets/mem/tb_fc_w_case0.mem"),
     .BIASES_FILE ("tb/assets/mem/tb_fc_b_case0.mem"),
@@ -275,6 +288,7 @@ module tb_dense;
   dense #(
     .DATA_WIDTH(DW), .FRAC_BITS(FRAC_BITS),
     .IN_DIM(IN_DIM), .OUT_DIM(OUT_DIM),
+    .DENSE_OUT_PAR(1),
     .POST_SHIFT(POST_SHIFT),
     .WEIGHTS_FILE("tb/assets/mem/tb_fc_w_case1.mem"),
     .BIASES_FILE ("tb/assets/mem/tb_fc_b_case1.mem"),
@@ -289,6 +303,7 @@ module tb_dense;
   dense #(
     .DATA_WIDTH(DW), .FRAC_BITS(FRAC_BITS),
     .IN_DIM(IN_DIM), .OUT_DIM(OUT_DIM),
+    .DENSE_OUT_PAR(1),
     .POST_SHIFT(POST_SHIFT),
     .WEIGHTS_FILE("tb/assets/mem/tb_fc_w_case2.mem"),
     .BIASES_FILE ("tb/assets/mem/tb_fc_b_case2.mem"),
@@ -298,6 +313,21 @@ module tb_dense;
     .clk, .reset, .start(start2),
     .in_addr(in_addr2), .in_en(in_en2), .in_q(in_q2),
     .out_vec(out2), .done(done2)
+  );
+
+  dense #(
+    .DATA_WIDTH(DW), .FRAC_BITS(FRAC_BITS),
+    .IN_DIM(IN_DIM), .OUT_DIM(OUT_DIM),
+    .DENSE_OUT_PAR(DUT3_PAR),
+    .POST_SHIFT(POST_SHIFT),
+    .WEIGHTS_FILE("tb/assets/mem/tb_fc_w_case0.mem"),
+    .BIASES_FILE ("tb/assets/mem/tb_fc_b_case0.mem"),
+    .LAT(DUT_LAT0),
+    .DBG_ENABLE(0)
+  ) dut3 (
+    .clk, .reset, .start(start3),
+    .in_addr(in_addr3), .in_en(in_en3), .in_q(in_q3),
+    .out_vec(out3), .done(done3)
   );
 
   // ============================================================
@@ -311,7 +341,7 @@ module tb_dense;
     bit done_seen;
   } mon_t;
 
-  mon_t m0, m1, m2;
+  mon_t m0, m1, m2, m3;
 
   task automatic mon_reset(ref mon_t m);
     m.reads     = 0;
@@ -366,6 +396,7 @@ module tb_dense;
     mon_step("DUT0", m0, reset, start0, done0, in_en0, in_addr0);
     mon_step("DUT1", m1, reset, start1, done1, in_en1, in_addr1);
     mon_step("DUT2", m2, reset, start2, done2, in_en2, in_addr2);
+    mon_step("DUT3", m3, reset, start3, done3, in_en3, in_addr3);
   end
 
   // ============================================================
@@ -373,7 +404,7 @@ module tb_dense;
   // ============================================================
   task automatic run_case(
     input string name,
-    input int    which,                 // 0/1/2
+    input int    which,                 // 0/1/2/3
     input int    guard_max
   );
     int guard;
@@ -396,31 +427,39 @@ module tb_dense;
       $readmemh("tb/assets/mem/tb_fc_b_case1.mem", Bimg);
       compute_golden(x_case1, Wimg, Bimg, gold, sat_p_exp, sat_n_exp);
       start1 <= 1'b1; @(posedge clk); start1 <= 1'b0;
-    end else begin
+    end else if (which==2) begin
       $readmemh("tb/assets/mem/tb_fc_w_case2.mem", Wimg);
       $readmemh("tb/assets/mem/tb_fc_b_case2.mem", Bimg);
       compute_golden(x_case2, Wimg, Bimg, gold, sat_p_exp, sat_n_exp);
       start2 <= 1'b1; @(posedge clk); start2 <= 1'b0;
+    end else if (which==3) begin
+      $readmemh("tb/assets/mem/tb_fc_w_case0.mem", Wimg);
+      $readmemh("tb/assets/mem/tb_fc_b_case0.mem", Bimg);
+      compute_golden(x_case0, Wimg, Bimg, gold, sat_p_exp, sat_n_exp);
+      start3 <= 1'b1; @(posedge clk); start3 <= 1'b0;
+    end else begin
+      $fatal(1, "[%s] unsupported case id %0d", name, which);
     end
 
     guard = 0;
     while (guard < guard_max) begin
       @(posedge clk);
       guard++;
-      if ((which==0 && done0) || (which==1 && done1) || (which==2 && done2)) break;
+      if ((which==0 && done0) || (which==1 && done1) || (which==2 && done2) || (which==3 && done3)) break;
     end
     if (guard >= guard_max) $fatal(1, "[%s] TIMEOUT waiting done (guard=%0d)", name, guard);
 
     // done should be a 1-cycle pulse
     @(posedge clk);
-    if ((which==0 && done0) || (which==1 && done1) || (which==2 && done2))
+    if ((which==0 && done0) || (which==1 && done1) || (which==2 && done2) || (which==3 && done3))
       $error("[%s] done is not a 1-cycle pulse", name);
 
     sat_p_got = 0; sat_n_got = 0;
     for (int o=0;o<OUT_DIM;o++) begin
       if (which==0) y_hw[o] = out0[o];
       else if (which==1) y_hw[o] = out1[o];
-      else y_hw[o] = out2[o];
+      else if (which==2) y_hw[o] = out2[o];
+      else y_hw[o] = out3[o];
 
       if (y_hw[o] === S_MAX) sat_p_got++;
       if (y_hw[o] === S_MIN) sat_n_got++;
@@ -457,10 +496,17 @@ module tb_dense;
       end
     end
 
+    if (which==3) begin
+      if (m3.reads != DUT3_EXPECTED_READS) begin
+        $display("[%s] BAD_READ_COUNT got=%0d exp=%0d", name, m3.reads, DUT3_EXPECTED_READS);
+        errs++;
+      end
+    end
+
     if (errs==0) begin
       $display("[%s] PASS (reads=%0d, sat +%0d -%0d)",
                name,
-               (which==0)?m0.reads:((which==1)?m1.reads:m2.reads),
+               (which==0)?m0.reads:((which==1)?m1.reads:((which==2)?m2.reads:m3.reads)),
                sat_p_got, sat_n_got);
     end else begin
       dump_vec({name," HW"},   y_hw);
@@ -473,7 +519,7 @@ module tb_dense;
   // Test sequence
   // ============================================================
   initial begin : MAIN
-    start0 = 0; start1 = 0; start2 = 0;
+    start0 = 0; start1 = 0; start2 = 0; start3 = 0;
 
     @(negedge reset);
     repeat (2) @(posedge clk);
@@ -481,6 +527,7 @@ module tb_dense;
     run_case("CASE0_NORMAL_DUTLAT2", 0, 200000);
     run_case("CASE1_POSSAT_DUTLAT3", 1, 200000);
     run_case("CASE2_NEGSAT_DUTLAT1", 2, 200000);
+    run_case("CASE3_PAR2_SMOKE", 3, 200000);
 
     $display("ALL DENSE TESTS PASSED");
     $finish;

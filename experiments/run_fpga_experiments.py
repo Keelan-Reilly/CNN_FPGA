@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_SCRIPT = REPO_ROOT / "fpga" / "vivado" / "run_batch.sh"
 PARSE_SCRIPT = REPO_ROOT / "fpga" / "vivado" / "parse_reports.py"
 
-SUPPORTED_SWEEP_PARAMS = {"DATA_WIDTH", "FRAC_BITS", "CLK_FREQ_HZ", "BAUD_RATE"}
+SUPPORTED_SWEEP_PARAMS = {"DATA_WIDTH", "FRAC_BITS", "CLK_FREQ_HZ", "BAUD_RATE", "DENSE_OUT_PAR"}
 
 
 def utc_now() -> str:

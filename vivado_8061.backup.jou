@@ -3,22 +3,22 @@
 # SW Build 6299465 on Fri Nov 14 12:34:56 MST 2025
 # IP Build 6300035 on Fri Nov 14 10:48:45 MST 2025
 # SharedData Build 6298862 on Thu Nov 13 04:50:51 MST 2025
-# Start of session at: Tue Mar 10 14:44:58 2026
-# Process ID         : 25533
+# Start of session at: Wed Mar 11 15:46:19 2026
+# Process ID         : 8061
 # Current directory  : /home/keelan/CNN_FPGA
-# Command line       : vivado -mode batch -source /home/keelan/CNN_FPGA/fpga/vivado/run_batch.tcl -tclargs /home/keelan/CNN_FPGA /home/keelan/CNN_FPGA/results/fpga/runs/sweep_bitwidth/sweep_DATA_WIDTH16_FRAC_BITS6_20260310T144456Z xc7a35tcpg236-1 top_level /home/keelan/CNN_FPGA/CNN_constraints.xdc 10.0 4 BAUD_RATE=115200,CLK_FREQ_HZ=100000000,DATA_WIDTH=16,FRAC_BITS=6
+# Command line       : vivado -mode batch -source /home/keelan/CNN_FPGA/fpga/vivado/run_batch.tcl -tclargs . /home/keelan/CNN_FPGA/results/fpga/runs/manual/dense_par2 xc7a35tcpg236-1 top_level ./CNN_constraints.xdc 10.0 4 DATA_WIDTH=16,FRAC_BITS=7,DENSE_OUT_PAR=2,CLK_FREQ_HZ=100000000,BAUD_RATE=115200
 # Log file           : /home/keelan/CNN_FPGA/vivado.log
 # Journal file       : /home/keelan/CNN_FPGA/vivado.jou
 # Running On         : keelan-Inspiron-5593
 # Platform           : Ubuntu
 # Operating System   : Ubuntu 22.04.5 LTS
 # Processor Detail   : Intel(R) Core(TM) i7-1065G7 CPU @ 1.30GHz
-# CPU Frequency      : 2165.971 MHz
+# CPU Frequency      : 3127.178 MHz
 # CPU Physical cores : 4
 # CPU Logical cores  : 8
 # Host memory        : 16527 MB
 # Swap memory        : 2147 MB
 # Total Virtual      : 18674 MB
-# Available Virtual  : 13463 MB
+# Available Virtual  : 15884 MB
 #-----------------------------------------------------------
 source /home/keelan/CNN_FPGA/fpga/vivado/run_batch.tcl
