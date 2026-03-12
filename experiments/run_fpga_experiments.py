@@ -20,6 +20,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_SCRIPT = REPO_ROOT / "fpga" / "vivado" / "run_batch.sh"
 PARSE_SCRIPT = REPO_ROOT / "fpga" / "vivado" / "parse_reports.py"
+PERF_SCRIPT = REPO_ROOT / "experiments" / "collect_verilator_perf.py"
 
 SUPPORTED_SWEEP_PARAMS = {"DATA_WIDTH", "FRAC_BITS", "CLK_FREQ_HZ", "BAUD_RATE", "DENSE_OUT_PAR"}
 
@@ -150,6 +151,59 @@ def parse_metrics(run_dir: Path, clock_period_ns: Any) -> dict[str, Any]:
     return json.loads(metrics_path.read_text())
 
 
+def collect_performance(run_dir: Path, params: dict[str, Any]) -> dict[str, Any]:
+    perf_dir = run_dir / "verilator_perf"
+    perf_json = perf_dir / "performance.json"
+    perf_dir.mkdir(parents=True, exist_ok=True)
+    clk_hz = int(params.get("CLK_FREQ_HZ", 100_000_000))
+    cmd = [
+        sys.executable,
+        str(PERF_SCRIPT),
+        "--run-dir",
+        str(run_dir),
+        "--clock-hz",
+        str(clk_hz),
+    ]
+    for key in sorted(params.keys()):
+        if key in SUPPORTED_SWEEP_PARAMS:
+            cmd += ["--generic", f"{key}={params[key]}"]
+
+    helper_log = perf_dir / "collect_verilator_perf.log"
+    with helper_log.open("w") as logf:
+        rc = subprocess.run(cmd, cwd=REPO_ROOT, stdout=logf, stderr=subprocess.STDOUT).returncode
+    if rc != 0 or not perf_json.exists():
+        return {
+            "latency_cycles": None,
+            "latency_time_ms": None,
+            "throughput_inferences_per_sec": None,
+            "stage_cycles_conv": None,
+            "stage_cycles_relu": None,
+            "stage_cycles_pool": None,
+            "stage_cycles_dense": None,
+            "stage_cycles_argmax": None,
+            "bubble_cycles": None,
+            "busy_cycles": None,
+            "tx_wait_cycles": None,
+            "measurement_source": "verilator_full_pipeline_frame_cycles",
+            "latency_kind": "compute_only",
+            "clock_hz": clk_hz,
+            "measured_fields": [
+                "latency_cycles",
+                "stage_cycles_conv",
+                "stage_cycles_relu",
+                "stage_cycles_pool",
+                "stage_cycles_dense",
+                "stage_cycles_argmax",
+                "bubble_cycles",
+                "busy_cycles",
+                "tx_wait_cycles",
+            ],
+            "derived_fields": ["latency_time_ms", "throughput_inferences_per_sec"],
+            "perf_error": True,
+        }
+    return json.loads(perf_json.read_text())
+
+
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
@@ -182,6 +236,20 @@ def aggregate(experiment_id: str, rows: list[dict[str, Any]]) -> None:
         "wns_ns",
         "fmax_mhz_est",
         "timing_bottleneck",
+        "latency_cycles",
+        "latency_time_ms",
+        "throughput_inferences_per_sec",
+        "stage_cycles_conv",
+        "stage_cycles_relu",
+        "stage_cycles_pool",
+        "stage_cycles_dense",
+        "stage_cycles_argmax",
+        "bubble_cycles",
+        "busy_cycles",
+        "tx_wait_cycles",
+        "measurement_source",
+        "latency_kind",
+        "clock_hz",
         "run_dir",
         "params",
     ]
@@ -242,6 +310,9 @@ def main() -> int:
         ended = utc_now()
 
         metrics = parse_metrics(run_dir, run.get("clock_period_ns"))
+        performance = collect_performance(run_dir, params)
+        metrics["performance"] = performance
+        write_json(run_dir / "metrics.json", metrics)
         status = "succeeded" if rc == 0 else "failed"
 
         run_meta = {
@@ -278,6 +349,20 @@ def main() -> int:
                 "wns_ns": timing.get("wns_ns"),
                 "fmax_mhz_est": timing.get("fmax_mhz_est"),
                 "timing_bottleneck": timing.get("bottleneck_summary"),
+                "latency_cycles": performance.get("latency_cycles"),
+                "latency_time_ms": performance.get("latency_time_ms"),
+                "throughput_inferences_per_sec": performance.get("throughput_inferences_per_sec"),
+                "stage_cycles_conv": performance.get("stage_cycles_conv"),
+                "stage_cycles_relu": performance.get("stage_cycles_relu"),
+                "stage_cycles_pool": performance.get("stage_cycles_pool"),
+                "stage_cycles_dense": performance.get("stage_cycles_dense"),
+                "stage_cycles_argmax": performance.get("stage_cycles_argmax"),
+                "bubble_cycles": performance.get("bubble_cycles"),
+                "busy_cycles": performance.get("busy_cycles"),
+                "tx_wait_cycles": performance.get("tx_wait_cycles"),
+                "measurement_source": performance.get("measurement_source"),
+                "latency_kind": performance.get("latency_kind"),
+                "clock_hz": performance.get("clock_hz"),
                 "run_dir": str(run_dir.relative_to(REPO_ROOT)),
                 "params": json.dumps(params, sort_keys=True),
             }

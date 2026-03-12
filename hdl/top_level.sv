@@ -400,6 +400,10 @@ module top_level #(
     logic [63:0] cycle_ctr;
     logic [63:0] t_start, t_conv, t_relu, t_pool, t_flat, t_dense, t_argmax, t_tx;
     logic        tx_start_q;
+    logic        dense_active_q, argmax_active_q, perf_active_q;
+    logic [63:0] stage_cycles_conv, stage_cycles_relu, stage_cycles_pool;
+    logic [63:0] stage_cycles_dense, stage_cycles_argmax;
+    logic [63:0] bubble_cycles, busy_cycles, tx_wait_cycles;
 
     always_ff @(posedge clk) begin
         if (reset) cycle_ctr <= 64'd0;
@@ -411,8 +415,60 @@ module top_level #(
             t_start<=0; t_conv<=0; t_relu<=0; t_pool<=0;
             t_flat<=0;  t_dense<=0; t_argmax<=0; t_tx<=0;
             tx_start_q <= 1'b0;
+            dense_active_q  <= 1'b0;
+            argmax_active_q <= 1'b0;
+            perf_active_q   <= 1'b0;
+            stage_cycles_conv   <= 64'd0;
+            stage_cycles_relu   <= 64'd0;
+            stage_cycles_pool   <= 64'd0;
+            stage_cycles_dense  <= 64'd0;
+            stage_cycles_argmax <= 64'd0;
+            bubble_cycles       <= 64'd0;
+            busy_cycles         <= 64'd0;
+            tx_wait_cycles      <= 64'd0;
         end else begin
             tx_start_q <= tx_start;
+
+            if (dense_start) dense_active_q <= 1'b1;
+            if (dense_done)  dense_active_q <= 1'b0;
+
+            if (dense_done)  argmax_active_q <= 1'b1;
+            if (argmax_done) argmax_active_q <= 1'b0;
+
+            if (frame_loaded) begin
+                perf_active_q   <= 1'b1;
+                stage_cycles_conv   <= 64'd0;
+                stage_cycles_relu   <= 64'd0;
+                stage_cycles_pool   <= 64'd0;
+                stage_cycles_dense  <= 64'd0;
+                stage_cycles_argmax <= 64'd0;
+                bubble_cycles       <= 64'd0;
+                busy_cycles         <= 64'd0;
+                tx_wait_cycles      <= 64'd0;
+            end else if (tx_start) begin
+                perf_active_q <= 1'b0;
+            end
+
+            if (perf_active_q) begin
+                busy_cycles <= busy_cycles + 64'd1;
+
+                if (conv_active) begin
+                    stage_cycles_conv <= stage_cycles_conv + 64'd1;
+                end else if (relu_active) begin
+                    stage_cycles_relu <= stage_cycles_relu + 64'd1;
+                end else if (pool_active) begin
+                    stage_cycles_pool <= stage_cycles_pool + 64'd1;
+                end else if (dense_active_q) begin
+                    stage_cycles_dense <= stage_cycles_dense + 64'd1;
+                end else if (argmax_active_q) begin
+                    stage_cycles_argmax <= stage_cycles_argmax + 64'd1;
+                end else begin
+                    bubble_cycles <= bubble_cycles + 64'd1;
+                end
+
+                if (tx_pending && !argmax_active_q)
+                    tx_wait_cycles <= tx_wait_cycles + 64'd1;
+            end
 
             if (frame_loaded) t_start  <= cycle_ctr;
             if (conv_done)    t_conv   <= cycle_ctr;
@@ -434,6 +490,14 @@ module top_level #(
                 $display(" dense = %0d",      t_dense  - t_flat);
                 $display(" argmx = %0d",      t_tx     - t_dense);
                 $display("----------------------------");
+                $display("PERF_METRIC stage_cycles_conv=%0d",   stage_cycles_conv);
+                $display("PERF_METRIC stage_cycles_relu=%0d",   stage_cycles_relu);
+                $display("PERF_METRIC stage_cycles_pool=%0d",   stage_cycles_pool);
+                $display("PERF_METRIC stage_cycles_dense=%0d",  stage_cycles_dense);
+                $display("PERF_METRIC stage_cycles_argmax=%0d", stage_cycles_argmax);
+                $display("PERF_METRIC bubble_cycles=%0d",       bubble_cycles);
+                $display("PERF_METRIC busy_cycles=%0d",         busy_cycles);
+                $display("PERF_METRIC tx_wait_cycles=%0d",      tx_wait_cycles);
             end
 
             if (dense_done && !$test$plusargs("quiet")) begin

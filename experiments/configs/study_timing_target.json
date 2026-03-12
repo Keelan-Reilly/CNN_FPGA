@@ -1,0 +1,38 @@
+{
+  "experiment_id": "study_timing_target",
+  "vivado": {
+    "part": "xc7a35tcpg236-1",
+    "top": "top_level",
+    "xdc": "CNN_constraints.xdc",
+    "jobs": 4
+  },
+  "base_params": {
+    "DATA_WIDTH": 16,
+    "FRAC_BITS": 7,
+    "DENSE_OUT_PAR": 1,
+    "BAUD_RATE": 115200
+  },
+  "runs": [
+    {
+      "run_id": "target_80mhz",
+      "clock_period_ns": 12.5,
+      "params": {
+        "CLK_FREQ_HZ": 80000000
+      }
+    },
+    {
+      "run_id": "target_100mhz",
+      "clock_period_ns": 10.0,
+      "params": {
+        "CLK_FREQ_HZ": 100000000
+      }
+    },
+    {
+      "run_id": "target_125mhz",
+      "clock_period_ns": 8.0,
+      "params": {
+        "CLK_FREQ_HZ": 125000000
+      }
+    }
+  ]
+}

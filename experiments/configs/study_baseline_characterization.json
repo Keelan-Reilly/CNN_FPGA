@@ -1,0 +1,22 @@
+{
+  "experiment_id": "study_baseline_characterization",
+  "vivado": {
+    "part": "xc7a35tcpg236-1",
+    "top": "top_level",
+    "xdc": "CNN_constraints.xdc",
+    "jobs": 4
+  },
+  "clock_period_ns": 10.0,
+  "base_params": {
+    "DATA_WIDTH": 16,
+    "FRAC_BITS": 7,
+    "DENSE_OUT_PAR": 1,
+    "CLK_FREQ_HZ": 100000000,
+    "BAUD_RATE": 115200
+  },
+  "runs": [
+    {
+      "run_id": "baseline_dw16_fb7_par1_100mhz"
+    }
+  ]
+}

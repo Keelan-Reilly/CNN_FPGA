@@ -1,0 +1,38 @@
+{
+  "experiment_id": "study_precision_resource",
+  "vivado": {
+    "part": "xc7a35tcpg236-1",
+    "top": "top_level",
+    "xdc": "CNN_constraints.xdc",
+    "jobs": 4
+  },
+  "clock_period_ns": 10.0,
+  "base_params": {
+    "DENSE_OUT_PAR": 1,
+    "CLK_FREQ_HZ": 100000000,
+    "BAUD_RATE": 115200
+  },
+  "runs": [
+    {
+      "run_id": "q12_5",
+      "params": {
+        "DATA_WIDTH": 12,
+        "FRAC_BITS": 5
+      }
+    },
+    {
+      "run_id": "q14_6",
+      "params": {
+        "DATA_WIDTH": 14,
+        "FRAC_BITS": 6
+      }
+    },
+    {
+      "run_id": "q16_7",
+      "params": {
+        "DATA_WIDTH": 16,
+        "FRAC_BITS": 7
+      }
+    }
+  ]
+}
