@@ -1,226 +1,225 @@
-# Quantised CNN Inference Accelerator (FPGA / RTL)
+# Quantised CNN Inference Accelerator
 
-This project implements a digit-classification CNN entirely in **SystemVerilog RTL**.  
-Inference is executed as a **staged, BRAM-backed hardware pipeline**:
+This repository implements a small MNIST digit classifier as a fully RTL, BRAM-backed FPGA inference pipeline in SystemVerilog. It includes Verilator-based simulation, PyTorch training and weight export scripts, and a config-driven Vivado experiment flow for area, timing, and performance studies.
 
-conv → ReLU → maxpool → dense → argmax
+The current design accepts one 28x28 grayscale frame over UART, runs inference entirely in hardware, and transmits a single ASCII digit result.
 
-An input **28×28 grayscale image (784 bytes)** is received over UART, written into on-chip memory, and processed fully in hardware.  
-After inference, a single **ASCII digit (`'0'–'9'`)** corresponding to the argmax output is transmitted over UART TX.
+## Project Overview
 
-Cycle-accurate simulation is performed using **Verilator**, with a C++ testbench and Python reference model used to verify correctness against a quantised software implementation.
+The accelerator datapath is:
 
-This project demonstrates how fixed-point neural network inference can be implemented **entirely in RTL**, with explicit control over dataflow, memory access, and latency.
+`UART RX -> IFMAP BRAM -> conv2d -> CONV BRAM -> ReLU -> maxpool -> POOL BRAM -> dense -> argmax -> UART TX`
 
----
+Key characteristics:
 
-### Key Results
+- The controller runs stages sequentially with explicit start/done handshakes.
+- Intermediate tensors are stored in on-chip BRAM rather than streamed between stages.
+- Arithmetic is fixed-point throughout.
+- The main exposed architecture knobs are `DATA_WIDTH`, `FRAC_BITS`, `CLK_FREQ_HZ`, `BAUD_RATE`, and `DENSE_OUT_PAR`.
 
-- **Compute latency (frame_loaded → tx_start):** ~465,732 cycles  
-  → **~4.66 ms @ 100 MHz** (pipeline only)
+This repository is both an implementation repo and a small FPGA architecture-study repo. The README stays focused on how to run it; the full study write-up lives in `report.md`.
 
-- **End-to-end latency (UART RX image + compute + UART TX):** ~7,281,850 cycles @ 115,200 baud  
-  → **~72.8 ms @ 100 MHz** (I/O dominates)
+## Prerequisites
 
-- **Accuracy (MNIST test):**
-  - **Float PyTorch model (early convergence, 1 Epoch):** 94.26%
-  - **Quantised RTL (Verilator batch, 1,000 images):** 92.20%
+- `verilator` for RTL simulation
+- a C++ toolchain and `make`
+- Python 3
+- PyTorch and torchvision for `python/train.py` and `python/quantise.py`
+- Vivado for the FPGA implementation flow under `fpga/vivado/`
+- `matplotlib` for plot generation in `analysis/fpga_plot.py`
 
-- **Top-level module:** `hdl/top_level.sv`  
-- **Verification:** Cycle-accurate Verilator + fixed-point Python golden model
+## Quick Start
 
----
-### Architecture Pipeline
+### Full-pipeline simulation
 
-UART RX
-↓
-IFMAP BRAM (28×28)
-↓
-Conv2D
-↓
-CONV BRAM
-↓
-ReLU
-↓
-MaxPool
-↓
-POOL BRAM
-↓
-Dense
-↓
-Argmax
-↓
-UART TX
-
----
-
-
-## Simulation and Verification
-
-### Verilator
-
-- End-to-end C++ testbench driving UART input and observing UART output.
-- Per-stage cycle counts are reported during simulation.
-- Tested with **Verilator 5.018+**.
-
-### Python Reference
-
-- PyTorch model is trained and quantised.
-- Fixed-point math is mirrored in software.
-- Hardware logits and predictions are compared against software results.
-
----
-
-
-# Quick Start
-
-## 1) Build and run full inference
+Build and run the default full inference testbench:
 
 ```bash
 make run
 ```
-Expected output:
+
+Equivalent explicit target:
 
 ```bash
----- Performance Report ----
-Frame cycles: 435939
- conv  = 322963
- relu  = 18819
- pool  = 9411
- flat  = 1
- dense = 31373
- argmx = 12
-----------------------------
-TX byte: 0x37  (7)
-Predicted digit (numeric): 7
+make run_full
 ```
 
-## 2) FPGA deployment and UART test
-1.	Build/flash your bitstream.
-2.	Send an image and read back the prediction:
+This builds the top-level RTL with Verilator and runs the C++ full-pipeline testbench in [`tb/tb_full_pipeline.cpp`](/home/keelan/CNN_FPGA/tb/tb_full_pipeline.cpp).
 
-Output(Example)
-``` bash
-[SW] predicted 7
-[HW] trial 1: 7
-[HW] trial 2: 7
-Agreement: 5/5
+### Batch simulation on MNIST files
+
+Run the batch testbench using the default MNIST raw dataset paths:
+
+```bash
+make run_batch
 ```
 
-## FPGA Experiment Automation (Vivado Batch)
+Generate per-failure VCDs during a larger batch run:
 
-- Baseline run:
-  - `python3 experiments/run_fpga_experiments.py --config experiments/configs/baseline_fpga.json`
-- Sweep run:
-  - `python3 experiments/run_fpga_experiments.py --config experiments/configs/sweep_bitwidth.json`
-- Makefile wrappers:
-  - `make fpga_experiments`
-  - `make fpga_experiments_sweep`
+```bash
+make run_batch_vcd
+```
 
-Outputs are written only under `results/`:
-- per-run: `results/fpga/runs/<experiment_id>/<run_id>/`
-- aggregates: `results/fpga/aggregates/<experiment_id>.json` and `.csv`
+Batch outputs are written under `results/verilator/batch/`.
 
-Each run writes:
-- `config_resolved.json`
-- `run_meta.json`
-- `vivado.log`
-- `reports/`
-- `metrics.json`
+### Train and export weights
 
-Supported sweep/build parameters (top-level generics):
+Train the reference PyTorch model:
+
+```bash
+python3 python/train.py --data-dir ./data --out-dir ./output
+```
+
+Quantise the trained model and emit `.mem` files for RTL use:
+
+```bash
+python3 python/quantise.py --model-dir ./output --out-dir ./weights --weight-frac 7
+```
+
+## Reproducible Experiment and Analysis Flow
+
+### Vivado experiment runner
+
+Run the baseline FPGA experiment:
+
+```bash
+make fpga_experiments
+```
+
+Run the bit-width sweep wrapper:
+
+```bash
+make fpga_experiments_sweep
+```
+
+Or invoke the config-driven runner directly:
+
+```bash
+python3 experiments/run_fpga_experiments.py --config experiments/configs/baseline_fpga.json
+python3 experiments/run_fpga_experiments.py --config experiments/configs/study_dense_parallel_scaling.json
+python3 experiments/run_fpga_experiments.py --config experiments/configs/study_precision_resource.json
+python3 experiments/run_fpga_experiments.py --config experiments/configs/study_timing_target.json
+```
+
+Supported sweep/generic parameters in the current flow:
+
 - `DATA_WIDTH`
 - `FRAC_BITS`
-- `DENSE_OUT_PAR`
 - `CLK_FREQ_HZ`
 - `BAUD_RATE`
+- `DENSE_OUT_PAR`
 
-Metric notes:
-- `WNS` is parsed from Vivado post-route timing summary.
-- `fmax_mhz_est` is computed from `clock_period_target_ns` and parsed `WNS`:
-  `fmax ≈ 1000 / (target_period - WNS)` when defined.
+### Summaries, plots, and latency model
 
-## FPGA Analysis and Plotting
+Print an aggregate summary table:
 
-CLI summary (includes failed runs):
-- `python3 analysis/fpga_summary.py --experiment-id baseline_fpga --include-failed`
-  - Default experiment id is `baseline_fpga` if `--experiment-id` is omitted.
-
-Plot generation:
-- `python3 analysis/fpga_plot.py --experiment-id sweep_bitwidth`
-  - Default experiment id is `baseline_fpga` if `--experiment-id` is omitted.
-- Optional controls:
-  - `--x-param DATA_WIDTH`
-  - `--group-by FRAC_BITS`
-  - `--filter FRAC_BITS=7`
-  - Requires `matplotlib` in the Python environment.
-
-Makefile wrappers:
-- `make fpga_summary EXP=sweep_bitwidth`
-- `make fpga_plots EXP=sweep_bitwidth`
-
-Plot output path:
-- `results/fpga/plots/<experiment_id>/`
-
-Currently generated architecture-study plots (when data exists in aggregate):
-- `Fmax vs swept parameter`
-- `LUT vs swept parameter`
-- `FF vs swept parameter`
-- `DSP vs swept parameter`
-- `BRAM vs swept parameter`
-- `WNS vs swept parameter`
-- area-performance scatters: `Fmax vs LUT/FF/DSP/BRAM`
-
-Not currently generated (missing metrics in aggregate dataset):
-- throughput plots
-- end-to-end latency plots
-- model-vs-measurement plots requiring measured accuracy, cycle-level stage latency, or power/energy metrics
-
-# Generated Output Policy
-
-- Canonical generated-output root for new runs: `results/`
-- Verilator batch default output: `results/verilator/batch/`
-- Legacy `artifacts/experiments/` is retained for history only (deprecated for new runs)
-
-# Repository Layout
-
-```python
-
-.
-├─ hdl/                     # RTL modules
-├─ tb/                      # SystemVerilog + C++ testbenches (assets in tb/assets/mem/)
-├─ python/                  # training/quantisation/util scripts
-├─ weights/                 # model/input memory images
-├─ fpga/
-│  └─ vivado/               # Vivado batch entrypoint scripts
-├─ experiments/             # experiment orchestration wrappers
-├─ analysis/                # architecture-study analysis assets
-├─ docs/                    # project docs (including remote SSH notes)
-├─ results/                 # canonical generated-output root
-├─ artifacts/               # legacy outputs (deprecated for new runs)
-├─ Makefile
-└─ README.md     
-
+```bash
+make fpga_summary EXP=study_dense_parallel_scaling
+python3 analysis/fpga_summary.py --experiment-id study_dense_parallel_scaling --include-failed
 ```
 
-# Parameters and Configuration
+Generate plots from an aggregate dataset:
 
-| Parameter      | Value                        |
-|----------------|----------------------------- |
-| Input size     | 28×28                        |
-| Conv kernel    | 3×3                          |
-| Pooling size   | 2×2                          |
-| Dense outputs  | 10                           |
-| UART Baudrate  | 115200                       |
-| Clock freq     | 100 MHz                      |
+```bash
+make fpga_plots EXP=study_dense_parallel_scaling
+python3 analysis/fpga_plot.py --experiment-id study_dense_parallel_scaling --x-param DENSE_OUT_PAR
+python3 analysis/fpga_plot.py --experiment-id study_precision_resource --x-param DATA_WIDTH
+python3 analysis/fpga_plot.py --experiment-id study_timing_target --x-param CLK_FREQ_HZ
+```
 
----
+Build the dense-parallel analytical model dataset:
 
+```bash
+python3 experiments/analyze_latency_model.py --input results/fpga/aggregates/study_dense_parallel_scaling.csv
+python3 analysis/fpga_plot.py --aggregate results/fpga/aggregates/study_dense_parallel_scaling_model.csv --x-param DENSE_OUT_PAR
+```
 
-# Notes and Limitations
+### Output policy
 
-- Single-frame execution (no batching or overlap).
-- Fixed-point arithmetic throughout (no floating point).
-- UART transfer time dominates end-to-end latency in hardware.
-- Bit-widths and scaling must match the exported quantised model.
-- Designed for clarity and determinism rather than maximum throughput.
+- New generated outputs should go under `results/`.
+- Batch simulation defaults to `results/verilator/batch/`.
+- FPGA experiment runs go under `results/fpga/runs/<experiment_id>/<run_id>/`.
+- Aggregate CSV/JSON outputs go under `results/fpga/aggregates/`.
+- Legacy `artifacts/experiments/` is historical only and should not be used for new runs.
+
+For a headless workflow and CLI notes, see [`docs/remote-ssh.md`](/home/keelan/CNN_FPGA/docs/remote-ssh.md).
+
+## Current Checked-In Results
+
+These numbers are from the current checked-in study aggregates under `results/fpga/aggregates/`.
+
+### Baseline characterization
+
+Baseline point: `DATA_WIDTH=16`, `FRAC_BITS=7`, `DENSE_OUT_PAR=1`, `CLK_FREQ_HZ=100 MHz`.
+
+- Compute latency: `465,732` cycles, `4.65732 ms`
+- Throughput: `214.72` inferences/s
+- Area: `2720 LUT`, `1004 FF`, `5 DSP`, `6 BRAM`
+- Timing: `WNS = +0.017 ns`, estimated `Fmax = 100.17 MHz`
+- Stage breakdown: conv `344,962`, ReLU `25,090`, maxpool `32,930`, dense `62,732`, argmax `11`, bubble `7`
+
+The baseline is clearly convolution-bound: conv accounts for about 74% of compute cycles.
+
+### Dense parallel scaling takeaway
+
+The main architecture sweep varies `DENSE_OUT_PAR = 1, 2, 5, 10`.
+
+- Dense cycles scale from `62,732` at `P=1` to `6,275` at `P=10`
+- End-to-end compute latency improves only from `465,732` to `409,275` cycles
+- Throughput rises from `214.72` to `244.33` inferences/s
+- LUT usage grows from `2720` to `19,061`
+- DSP usage grows from `5` to `23`
+- WNS becomes negative for every point above `P=1`
+
+The checked-in result is the main study conclusion: dense parallelism scales locally, but the whole accelerator remains conv-bound.
+
+### Precision/resource control result
+
+The checked-in precision sweep covers `Q12.5`, `Q14.6`, and `Q16.7` style points:
+
+- Latency stays fixed at `465,732` cycles across the sweep
+- LUT usage moves from `2649` to `2720`
+- FF usage moves from `900` to `1004`
+- BRAM usage moves from `5.0` to `6.0`
+- Estimated `Fmax` stays close to `100 MHz`
+
+In the current architecture, precision changes implementation cost more than schedule.
+
+### Timing-target takeaway
+
+The timing-target sweep checks `80 MHz`, `100 MHz`, and `125 MHz` targets.
+
+- `100 MHz` is the only clean timing point in the checked-in data: `WNS = +0.017 ns`
+- `80 MHz` shows `WNS = -0.511 ns`
+- `125 MHz` shows `WNS = -0.096 ns`
+- The `125 MHz` run has no latency/throughput fields in the current aggregate
+
+This makes `100 MHz` the practical reference point for the current checked-in study.
+
+## Repository Layout
+
+```text
+.
+├─ hdl/                 RTL modules
+├─ tb/                  SystemVerilog and C++ testbenches
+├─ python/              training, quantisation, and utility scripts
+├─ weights/             fixed-point weight and input memory files
+├─ fpga/vivado/         Vivado batch scripts and report parsing
+├─ experiments/         experiment configs and orchestration scripts
+├─ analysis/            summary and plotting tools for aggregate results
+├─ docs/                auxiliary documentation
+├─ results/             canonical generated-output root
+├─ report.md            full study write-up
+├─ Makefile             primary CLI entrypoints
+└─ README.md
+```
+
+## Notes and Limitations
+
+- The current top-level design is single-frame and sequential; stages are not overlapped.
+- Reported study latency is compute-only (`frame_loaded -> tx_start`), not UART-dominated wall-clock end-to-end time.
+- Batch simulation assumes MNIST raw files at `data/MNIST/raw/` unless you override `ARGS`.
+- The repo includes UART-connected hardware logic, but it does not currently document a full board programming or flashing workflow.
+- Fixed-point scaling and exported `.mem` files must stay aligned with the RTL parameters.
+
+For the complete study narrative, use [`report.md`](/home/keelan/CNN_FPGA/report.md). For the recommended experiment set and plotting sequence, use [`experiments/FPGA_STUDY_SUITE.md`](/home/keelan/CNN_FPGA/experiments/FPGA_STUDY_SUITE.md).
