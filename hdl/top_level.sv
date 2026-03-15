@@ -46,6 +46,7 @@ module top_level #(
     parameter int OUT_CHANNELS = 8,
     parameter int NUM_CLASSES  = 10,
     parameter int DENSE_OUT_PAR = 1,
+    parameter bit DENSE_SPLIT_MAC_PIPELINE = 1'b0,
     parameter int CLK_FREQ_HZ  = 100_000_000,
     parameter int BAUD_RATE    = 115_200
 )(
@@ -281,6 +282,7 @@ module top_level #(
         .IN_DIM(PO_SZ),
         .OUT_DIM(NUM_CLASSES),
         .DENSE_OUT_PAR(DENSE_OUT_PAR),
+        .SPLIT_MAC_PIPELINE(DENSE_SPLIT_MAC_PIPELINE),
         .WEIGHTS_FILE(FC_W_FILE),
         .BIASES_FILE(FC_B_FILE),
         .POST_SHIFT(0),

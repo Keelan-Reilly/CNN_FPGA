@@ -21,6 +21,7 @@
 //   • READ:  drive in_addr, pulse in_en, latch up to `DENSE_OUT_PAR` weights
 //   • WAIT:  count down so that `in_q` becomes valid at MAC
 //   • MAC :  sample valid `in_q`, multiply by latched w_reg, accumulate
+//     Optional repair mode can split this into MAC_MUL then MAC_ACC.
 //
 // FSM flow
 //   IDLE
@@ -66,6 +67,8 @@ module dense #(
   parameter string WEIGHTS_FILE = "fc1_weights.mem",
   parameter string BIASES_FILE  = "fc1_biases.mem",
   parameter int LAT = 1,
+  // Dense-local timing experiment knob. Default preserves baseline behavior.
+  parameter bit SPLIT_MAC_PIPELINE = 1'b0,
 
   // ---- debug knobs (non-functional) ----
   parameter bit DBG_ENABLE       = 1,
@@ -105,7 +108,7 @@ module dense #(
   logic signed [DATA_WIDTH-1:0] B [0:OUT_DIM-1];
 
   // ---------- state ----------
-  typedef enum logic [2:0] {IDLE, READ, WAIT, MAC, WRITE, FINISH} state_t;
+  typedef enum logic [2:0] {IDLE, READ, WAIT, MAC, MAC_MUL, MAC_ACC, WRITE, FINISH} state_t;
   state_t state;
 
   // ---------- indices / accum ----------
@@ -114,6 +117,7 @@ module dense #(
 
   // ---------- weight address/pipe ----------
   logic signed [DATA_WIDTH-1:0]   w_reg [0:PAR-1];
+  logic signed [ACCW-1:0]         prod_reg [0:PAR-1];
 
   // ---------- LAT wait counter ----------
   localparam int WAITW = (LAT <= 1) ? 1 : $clog2(LAT);
@@ -212,6 +216,7 @@ module dense #(
       for (int lane = 0; lane < PAR; lane++) begin
         acc[lane]   <= '0;
         w_reg[lane] <= '0;
+        prod_reg[lane] <= '0;
       end
 
       for (int out_idx = 0; out_idx < OUT_DIM; out_idx++) begin
@@ -257,7 +262,7 @@ module dense #(
                   $display("[%0t][READ ] o_base=%0d i=%0d in_addr=%0d",
                            $time,o_base,i,in_addr);
 
-                state <= (LAT==0) ? MAC : WAIT;
+                state <= (LAT==0) ? (SPLIT_MAC_PIPELINE ? MAC_MUL : MAC) : WAIT;
               end
 
         // ------------------------------ WAIT -------------------------
@@ -265,21 +270,59 @@ module dense #(
                 if (dbg_ok_neuron() && dbg_lines < DBG_MAX_PRINTS)
                   $display("[%0t][WAIT ] o_base=%0d i=%0d  cnt=%0d", $time,o_base,i,wait_cnt);
 
-                if (wait_cnt == 0) state <= MAC;
+                if (wait_cnt == 0) state <= SPLIT_MAC_PIPELINE ? MAC_MUL : MAC;
                 else               wait_cnt <= wait_cnt - 1;
               end
 
-        // ------------------------------- MAC -------------------------
+        // ------------------------------ MAC --------------------------
         MAC: begin
                 for (int lane = 0; lane < PAR; lane++) begin
                   if (lane_active(lane, o_base)) begin
                     if (dbg_ok_neuron() && dbg_lines < DBG_MAX_PRINTS)
                       $display("[%0t][MAC  ] o=%0d i=%0d in_q=%0d w=%0d prod=%0d acc_pre=%0d acc_post=%0d",
                                $time,o_base + lane,i,in_q,w_reg[lane],
-                               $signed(in_q) * $signed(w_reg[lane]),
+                               prod_ext(in_q, w_reg[lane]),
                                acc[lane],acc[lane] + prod_ext(in_q, w_reg[lane]));
 
                     acc[lane] <= acc[lane] + prod_ext(in_q, w_reg[lane]);
+                  end
+                end
+
+                if (i == IN_DIM-1) begin
+                  state <= WRITE;
+                end else begin
+                  i        <= i + 1;
+                  in_addr  <= in_addr_t'(i + 1);
+                  state    <= READ;
+                end
+
+                if (dbg_ok_neuron() && dbg_lines < DBG_MAX_PRINTS)
+                  dbg_lines <= dbg_lines + 1;
+              end
+
+        // ----------------------------- MAC_MUL -----------------------
+        MAC_MUL: begin
+                for (int lane = 0; lane < PAR; lane++) begin
+                  if (lane_active(lane, o_base))
+                    prod_reg[lane] <= prod_ext(in_q, w_reg[lane]);
+                  else
+                    prod_reg[lane] <= '0;
+                end
+
+                state <= MAC_ACC;
+              end
+
+        // ----------------------------- MAC_ACC -----------------------
+        MAC_ACC: begin
+                for (int lane = 0; lane < PAR; lane++) begin
+                  if (lane_active(lane, o_base)) begin
+                    if (dbg_ok_neuron() && dbg_lines < DBG_MAX_PRINTS)
+                      $display("[%0t][MAC  ] o=%0d i=%0d in_q=%0d w=%0d prod=%0d acc_pre=%0d acc_post=%0d",
+                               $time,o_base + lane,i,in_q,w_reg[lane],
+                               prod_reg[lane],
+                               acc[lane],acc[lane] + prod_reg[lane]);
+
+                    acc[lane] <= acc[lane] + prod_reg[lane];
                   end
                 end
 
