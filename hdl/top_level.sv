@@ -45,6 +45,7 @@ module top_level #(
     parameter int IN_CHANNELS  = 1,
     parameter int OUT_CHANNELS = 8,
     parameter int NUM_CLASSES  = 10,
+    parameter int CONV_CHANNEL_PAR = 1,
     parameter int DENSE_OUT_PAR = 1,
     parameter bit DENSE_SPLIT_MAC_PIPELINE = 1'b0,
     parameter int CLK_FREQ_HZ  = 100_000_000,
@@ -79,6 +80,7 @@ module top_level #(
     localparam int IF_AW = $clog2(IF_SZ);
     localparam int OF_AW = $clog2(OF_SZ);
     localparam int PO_AW = $clog2(PO_SZ);
+    localparam int CONV_IF_BANKS = (CONV_CHANNEL_PAR < 1) ? 1 : CONV_CHANNEL_PAR;
 
     typedef logic [IF_AW-1:0] if_addr_t;
     typedef logic [OF_AW-1:0] of_addr_t;
@@ -148,20 +150,22 @@ module top_level #(
     logic [IF_AW-1:0]          if_a_addr;
     logic signed [DATA_WIDTH-1:0] if_a_din;
 
-    logic                      if_b_en;
-    logic [IF_AW-1:0]          if_b_addr;
-    logic signed [DATA_WIDTH-1:0] if_b_q;
+    logic [CONV_IF_BANKS-1:0]                 if_b_en;
+    logic [CONV_IF_BANKS-1:0][IF_AW-1:0]      if_b_addr;
+    logic signed [CONV_IF_BANKS-1:0][DATA_WIDTH-1:0] if_b_q;
 
     assign if_a_en   = rx_dv;
     assign if_a_we   = rx_dv;
     assign if_a_addr = lin3_if(0, r, c);
     assign if_a_din  = pix_q7_lut[rx_byte];
 
-    bram_sdp #(.DW(DATA_WIDTH), .DEPTH(IF_SZ)) ifmap_mem (
-      .clk   (clk),
-      .a_en  (if_a_en), .a_we(if_a_we), .a_addr(if_a_addr), .a_din(if_a_din),
-      .b_en  (if_b_en), .b_addr(if_b_addr), .b_dout(if_b_q)
-    );
+    for (genvar if_bank = 0; if_bank < CONV_IF_BANKS; if_bank++) begin : gen_ifmap_mem
+        bram_sdp #(.DW(DATA_WIDTH), .DEPTH(IF_SZ)) ifmap_mem (
+          .clk   (clk),
+          .a_en  (if_a_en), .a_we(if_a_we), .a_addr(if_a_addr), .a_din(if_a_din),
+          .b_en  (if_b_en[if_bank]), .b_addr(if_b_addr[if_bank]), .b_dout(if_b_q[if_bank])
+        );
+    end
 
     // CONV scratch: true dual-port.
     // Port A is read-only (shared: ReLU read OR MaxPool read).
@@ -200,8 +204,8 @@ module top_level #(
     logic conv_done,  relu_done,  pool_done,  dense_done;
 
     // ---- conv2d ↔ IFMAP/CONV ----
-    logic [IF_AW-1:0]          conv_if_addr;
-    logic                      conv_if_en;
+    logic [CONV_IF_BANKS-1:0][IF_AW-1:0]      conv_if_addr;
+    logic [CONV_IF_BANKS-1:0]                 conv_if_en;
 
     logic [OF_AW-1:0]          conv_w_addr;
     logic                      conv_w_en, conv_w_we;
@@ -209,7 +213,7 @@ module top_level #(
 
     conv2d #(
         .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
-        .IN_CHANNELS(IN_CHANNELS), .OUT_CHANNELS(OUT_CHANNELS),
+        .IN_CHANNELS(IN_CHANNELS), .CONV_CHANNEL_PAR(CONV_CHANNEL_PAR), .OUT_CHANNELS(OUT_CHANNELS),
         .KERNEL(3), .IMG_SIZE(IMG_SIZE),
         .WEIGHTS_FILE(CONV_W_FILE), .BIASES_FILE(CONV_B_FILE)
     ) u_conv (

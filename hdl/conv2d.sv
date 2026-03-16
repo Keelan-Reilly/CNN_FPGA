@@ -3,7 +3,7 @@
 //
 // Overview
 //   Streaming 2-D convolution (SAME padding) over a CHW input feature map,
-//   producing a CHW output feature map. The design performs one tap MAC
+//   producing a CHW output feature map. The design performs one tap-group MAC
 //   per cycle using a small FSM and an explicit pipeline that aligns:
 //
 //     • 1R synchronous BRAM read data (if_q)
@@ -77,14 +77,15 @@
 //   • Padding: out-of-bounds taps are treated as zero via pix_valid gating.
 //   • Scaling: bias is pre-shifted by FRAC_BITS; the final accumulator is
 //     right-shifted by FRAC_BITS before saturation/clamping to DATA_WIDTH.
-//   • Throughput: one tap per cycle (plus one extra MUL stage);
-//     latency per output pixel ≈ (Cin*K*K) * pipeline_depth + write overhead.
+//   • Throughput: one channel-group tap per cycle (plus one extra MUL stage);
+//     latency per output pixel scales with ceil(Cin/CONV_CHANNEL_PAR) * K*K.
 //======================================================================
 (* keep_hierarchy = "yes" *)
 module conv2d #(
     parameter int DATA_WIDTH      = 16,
     parameter int FRAC_BITS       = 7,
     parameter int IN_CHANNELS     = 1,
+    parameter int CONV_CHANNEL_PAR = 1,
     parameter int OUT_CHANNELS    = 8,
     parameter int KERNEL          = 3,                          // assumed odd
     parameter int IMG_SIZE        = 28,
@@ -95,10 +96,11 @@ module conv2d #(
     input  logic reset,                                        // synchronous reset
     input  logic start,                                        // start pulse
 
-    // IFMAP BRAM (read-only, 1-cycle latency)
-    output logic [$clog2(IN_CHANNELS*IMG_SIZE*IMG_SIZE)-1:0] if_addr,
-    output logic                                              if_en,
-    input  logic signed [DATA_WIDTH-1:0]                      if_q,
+    // IFMAP BRAM banks (read-only, 1-cycle latency). Each bank mirrors the
+    // same ifmap contents so conv can issue deterministic per-channel reads.
+    output logic [CONV_CHANNEL_PAR-1:0][$clog2(IN_CHANNELS*IMG_SIZE*IMG_SIZE)-1:0] if_addr,
+    output logic [CONV_CHANNEL_PAR-1:0]                                              if_en,
+    input  logic signed [CONV_CHANNEL_PAR-1:0][DATA_WIDTH-1:0]                       if_q,
 
     // OFMAP BRAM (write-only)
     output logic [$clog2(OUT_CHANNELS*IMG_SIZE*IMG_SIZE)-1:0] conv_addr,
@@ -122,6 +124,7 @@ module conv2d #(
 
     typedef logic [IF_AW-1:0] if_addr_t;
     typedef logic [OF_AW-1:0] of_addr_t;
+    localparam int PAR = (CONV_CHANNEL_PAR < 1) ? 1 : CONV_CHANNEL_PAR;
 
     // Accumulator width: product width + log2(#taps) + headroom
     localparam int ACCW = DATA_WIDTH*2 + $clog2(KERNEL*KERNEL*IN_CHANNELS) + 2;
@@ -136,8 +139,8 @@ module conv2d #(
     state_t state;
 
     // ------------------------- Loop counters -------------------------
-    integer oc, orow, ocol;   // output channel / row / col
-    integer ic, kr, kc;       // input channel / kernel row / kernel col
+    integer oc, orow, ocol;      // output channel / row / col
+    integer ic_base, kr, kc;     // current input-channel group / kernel row / kernel col
 
     // ----------------------- Accumulator / MAC -----------------------
     (* use_dsp = "yes" *) logic signed [ACCW-1:0] acc;
@@ -159,7 +162,6 @@ module conv2d #(
     localparam int           W_AW        = (W_DEPTH<=1)? 1 : $clog2(W_DEPTH);
     typedef logic [W_AW-1:0] w_addr_t;
 
-    w_addr_t w_addr;     // current weight addr for this tap
     w_addr_t w_base_oc;  // base weight addr for current output channel (oc)
 
     // ---------------------------- Helpers ----------------------------
@@ -175,12 +177,12 @@ module conv2d #(
 
     // --------------- Pipeline regs to align data/weight/valid --------
     // pix_valid_* tracks padding validity through the pipeline.
-    logic                         pix_valid_q, pix_valid_q1, pix_valid_q2, pix_valid_q3;
+    logic [PAR-1:0]                          pix_valid_q, pix_valid_q1, pix_valid_q2, pix_valid_q3;
 
     // if_q_q captures BRAM return data; weight_reg captures ROM read; weight_q is MAC-stage weight.
-    logic signed [DATA_WIDTH-1:0] if_q_q;
-    logic signed [DATA_WIDTH-1:0] weight_reg;
-    logic signed [DATA_WIDTH-1:0] weight_q;
+    logic signed [PAR-1:0][DATA_WIDTH-1:0] if_q_q;
+    logic signed [PAR-1:0][DATA_WIDTH-1:0] weight_reg;
+    logic signed [PAR-1:0][DATA_WIDTH-1:0] weight_q;
 
     // -------------------- Tail-flush write staging -------------------
     // res_q and conv_addr_q are staged so WRITE can assert a clean 1-cycle strobe.
@@ -188,7 +190,7 @@ module conv2d #(
     of_addr_t                        conv_addr_q;
 
     // -------------------- Product pipeline reg (NEW) -----------------
-    // Registering prod_ext breaks the long path (mul+add+shift+saturate).
+    // Registering prod_ext breaks the long path (parallel mul + reduction + add + shift + saturate).
     logic signed [ACCW-1:0] prod_ext_q;
 
     // --------------------- ROM file loading (sim) --------------------
@@ -215,27 +217,26 @@ module conv2d #(
             state <= IDLE; done <= 1'b0;
 
             oc<=0; orow<=0; ocol<=0;
-            ic<=0; kr<=0; kc<=0;
+            ic_base<=0; kr<=0; kc<=0;
 
             acc <= '0;
 
-            if_en     <= 1'b0;
+            if_en     <= '0;
             if_addr   <= '0;
             conv_en   <= 1'b0;
             conv_we   <= 1'b0;
             conv_addr <= '0;
             conv_d    <= '0;
 
-            pix_valid_q  <= 1'b0;
-            pix_valid_q1 <= 1'b0;
-            pix_valid_q2 <= 1'b0;
-            pix_valid_q3 <= 1'b0;
+            pix_valid_q  <= '0;
+            pix_valid_q1 <= '0;
+            pix_valid_q2 <= '0;
+            pix_valid_q3 <= '0;
 
             if_q_q     <= '0;
             weight_reg <= '0;
             weight_q   <= '0;
 
-            w_addr    <= '0;
             w_base_oc <= '0;
 
             res_q       <= '0;
@@ -246,7 +247,7 @@ module conv2d #(
         end else begin
             // default strobes (pulse-only outputs)
             done    <= 1'b0;
-            if_en   <= 1'b0;
+            if_en   <= '0;
             conv_en <= 1'b0;
             conv_we <= 1'b0;
 
@@ -257,32 +258,44 @@ module conv2d #(
               // ---------------------------------------------------------
               IDLE: if (start) begin
                         oc<=0; orow<=0; ocol<=0;
-                        ic<=0; kr<=0; kc<=0;
+                        ic_base<=0; kr<=0; kc<=0;
 
                         acc       <= bias_ext(B_rom[0]);
                         w_base_oc <= w_addr_t'(0);
-                        w_addr    <= w_addr_t'(0);
 
                         state <= READ;
                     end
 
               // ---------------------------------------------------------
               // READ: compute tap coordinates, issue BRAM read if valid,
-              //       and read corresponding weight.
+              //       and read corresponding channel-group weights.
               // ---------------------------------------------------------
               READ: begin
-                    int   ir   = orow + kr - PAD;
-                    int   icol = ocol + kc - PAD;
-                    logic in_range = (ir>=0 && ir<HEIGHT && icol>=0 && icol<WIDTH);
+                    int   ir;
+                    int   icol;
+                    logic in_range;
 
-                    pix_valid_q <= in_range;
+                    ir = orow + kr - PAD;
+                    icol = ocol + kc - PAD;
+                    in_range = (ir>=0 && ir<HEIGHT && icol>=0 && icol<WIDTH);
 
-                    if (in_range) begin
-                        if_addr <= if_addr_t'(lin3(ic, ir, icol, HEIGHT, WIDTH));
-                        if_en   <= 1'b1;
+                    for (int lane = 0; lane < PAR; lane++) begin
+                        int lane_ic;
+                        w_addr_t lane_w_addr;
+
+                        lane_ic = ic_base + lane;
+                        pix_valid_q[lane] <= in_range && (lane_ic < IN_CHANNELS);
+                        if_addr[lane] <= '0;
+                        weight_reg[lane] <= '0;
+
+                        if (lane_ic < IN_CHANNELS) begin
+                            if_addr[lane] <= if_addr_t'(lin3(lane_ic, ir, icol, HEIGHT, WIDTH));
+                            lane_w_addr = w_base_oc + w_addr_t'((lane_ic * W_K2) + (kr * KERNEL) + kc);
+                            weight_reg[lane] <= W_rom[lane_w_addr];
+                        end
+
+                        if_en[lane] <= in_range && (lane_ic < IN_CHANNELS);
                     end
-
-                    weight_reg <= W_rom[w_addr];
 
                     state <= WAIT;
               end
@@ -313,18 +326,21 @@ module conv2d #(
               // Splitting MUL and ADD improves FPGA timing closure.
               // ---------------------------------------------------------
               ACCUM_MUL: begin
-                            logic signed [DATA_WIDTH-1:0] pix_s;
-                            logic signed [DATA_WIDTH-1:0] w_s;
-                            logic signed [2*DATA_WIDTH-1:0] prod_now;
-                            logic signed [ACCW-1:0]         prod_ext;
+                            logic signed [ACCW-1:0] prod_sum;
 
-                            pix_s = pix_valid_q3 ? if_q_q : '0;     // pix_s is signed => correct sign interpretation
-                            w_s   = weight_q;
+                            prod_sum = '0;
+                            for (int lane = 0; lane < PAR; lane++) begin
+                                logic signed [DATA_WIDTH-1:0]   pix_s;
+                                logic signed [2*DATA_WIDTH-1:0] prod_now;
+                                logic signed [ACCW-1:0]         prod_ext;
 
-                            prod_now = pix_s * w_s;
+                                pix_s = pix_valid_q3[lane] ? if_q_q[lane] : '0;
+                                prod_now = pix_s * weight_q[lane];
+                                prod_ext = {{(ACCW-2*DATA_WIDTH){prod_now[2*DATA_WIDTH-1]}}, prod_now};
+                                prod_sum = prod_sum + prod_ext;
+                            end
 
-                            prod_ext = {{(ACCW-2*DATA_WIDTH){prod_now[2*DATA_WIDTH-1]}}, prod_now};
-                            prod_ext_q <= prod_ext;
+                            prod_ext_q <= prod_sum;
                             state <= ACCUM_ADD;
                         end
 
@@ -333,11 +349,11 @@ module conv2d #(
               // counters, and on final tap compute final pixel output.
               // ---------------------------------------------------------
               ACCUM_ADD: begin
-                    logic last_kc, last_kr, last_ic, last_tap;
+                    logic last_kc, last_kr, last_ic_group, last_tap;
                     last_kc  = (kc == KERNEL-1);
                     last_kr  = (kr == KERNEL-1);
-                    last_ic  = (ic == IN_CHANNELS-1);
-                    last_tap = last_kc && last_kr && last_ic;
+                    last_ic_group = ((ic_base + PAR) >= IN_CHANNELS);
+                    last_tap = last_kc && last_kr && last_ic_group;
 
                     // accumulate current tap (use acc+prod_ext_q for “this” tap)
                     acc <= acc + prod_ext_q;
@@ -366,16 +382,13 @@ module conv2d #(
                             kc <= 0;
                             if (last_kr) begin
                                 kr <= 0;
-                                ic <= ic + 1;
+                                ic_base <= ic_base + PAR;
                             end else begin
                                 kr <= kr + 1;
                             end
                         end else begin
                             kc <= kc + 1;
                         end
-
-                        // advance weight address for next tap
-                        w_addr <= w_addr + w_addr_t'(1);
 
                         state  <= READ;
                     end
@@ -400,26 +413,23 @@ module conv2d #(
                             end else begin
                                 // next output channel
                                 oc        <= oc + 1;
-                                ic<=0; kr<=0; kc<=0;
+                                ic_base<=0; kr<=0; kc<=0;
                                 acc       <= bias_ext(B_rom[oc+1]);
                                 w_base_oc <= w_base_oc + w_addr_t'(W_OC_STRIDE);
-                                w_addr    <= w_base_oc + w_addr_t'(W_OC_STRIDE);
                                 state     <= READ;
                             end
                         end else begin
                             // next output row
                             orow <= orow + 1;
-                            ic<=0; kr<=0; kc<=0;
+                            ic_base<=0; kr<=0; kc<=0;
                             acc    <= bias_ext(B_rom[oc]);
-                            w_addr <= w_base_oc;
                             state  <= READ;
                         end
                     end else begin
                         // next output column
                         ocol <= ocol + 1;
-                        ic<=0; kr<=0; kc<=0;
+                        ic_base<=0; kr<=0; kc<=0;
                         acc    <= bias_ext(B_rom[oc]);
-                        w_addr <= w_base_oc;
                         state  <= READ;
                     end
               end

@@ -121,18 +121,20 @@ module tb_conv2d;
   end
 
   // DUT IF interface
-  logic [IF_AW-1:0] if_addr;
-  logic             if_en;
-  logic signed [DATA_WIDTH-1:0] if_q;
+  logic [IC-1:0][IF_AW-1:0] if_addr;
+  logic [IC-1:0]            if_en;
+  logic signed [IC-1:0][DATA_WIDTH-1:0] if_q;
 
   // 1-cycle BRAM
-  logic [IF_AW-1:0]             if_addr_q;
-  logic signed [DATA_WIDTH-1:0] if_q_reg;
+  logic [IC-1:0][IF_AW-1:0]             if_addr_q;
+  logic signed [IC-1:0][DATA_WIDTH-1:0] if_q_reg;
 
   always_ff @(posedge clk) begin
-    if (if_en) begin
-      if_addr_q <= if_addr;
-      if_q_reg  <= ifmem[if_addr];
+    for (int lane = 0; lane < IC; lane++) begin
+      if (if_en[lane]) begin
+        if_addr_q[lane] <= if_addr[lane];
+        if_q_reg[lane]  <= ifmem[if_addr[lane]];
+      end
     end
   end
   assign if_q = if_q_reg;
@@ -160,7 +162,7 @@ module tb_conv2d;
   // ----------------------------
   conv2d #(
     .DATA_WIDTH(DATA_WIDTH), .FRAC_BITS(FRAC_BITS),
-    .IN_CHANNELS(IC), .OUT_CHANNELS(OC),
+    .IN_CHANNELS(IC), .CONV_CHANNEL_PAR(IC), .OUT_CHANNELS(OC),
     .KERNEL(K), .IMG_SIZE(H),
     .WEIGHTS_FILE("tb/assets/mem/tb_conv_w.mem"),
     .BIASES_FILE ("tb/assets/mem/tb_conv_b.mem")
