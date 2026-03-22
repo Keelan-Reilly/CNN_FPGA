@@ -49,7 +49,7 @@ The experiment runner explicitly supports sweeping exactly these parameters. Oth
 - `python/`: model training, quantisation, input preparation, UART sanity helpers, and a software golden model.
 - `fpga/vivado/`: scripts that run Vivado in batch mode and parse implementation reports.
 - `experiments/`: orchestration layer for repeated Vivado runs, Verilator performance collection, and analytical model generation.
-- `analysis/`: loaders, CLI summaries, and plotting tools for aggregated results.
+- `analysis/`: loaders, CLI summaries, plotting tools, and the workload-aware MAC-array framework v2 analysis layer.
 
 ### Documentation directories
 
@@ -88,6 +88,10 @@ The `Makefile` is the main operator-facing entrypoint:
 - `make fpga_experiments_sweep`: run the bit-width sweep config.
 - `make fpga_summary`: render a concise aggregate summary table.
 - `make fpga_plots`: generate plots from an aggregate dataset.
+- `make fpga_framework_v2`: generate the workload-aware MAC-array framework v2 results pack.
+- `make fpga_refresh_preview`: generate the selective measured-refresh manifest and preview only the runnable queue.
+- `make fpga_refresh_execute`: run the same selective refresh queue through the optional scheduler.
+- `make test`: run the deterministic Python unit tests for the newer analysis logic.
 
 The `Makefile` encodes an important design assumption: Verilator integration is first-class, not just an afterthought for unit tests. The full top-level design is expected to be simulation-friendly.
 
@@ -677,6 +681,13 @@ These files define reproducible FPGA study runs.
 
 - older or more generic dense-parallel sweep.
 
+`mac_array_framework_v2.json`:
+
+- workload-aware MAC-array framework config,
+- carries the canonical `4x4`, `8x4`, `8x8` grid set,
+- records measured static anchors such as the 8x8 shared `64 -> 32 DSP` reduction and the 8x8 replicated Artix-7 implementation failure,
+- defines switching-cost assumptions, workload classes, and policy-evaluation constraint presets.
+
 There are effectively two tiers of configs:
 
 - the `study_*` configs used by the current report structure,
@@ -734,6 +745,31 @@ It supports:
 
 This script is general enough to support both current and future sweep datasets, but it still reflects the metrics schema produced by the current experiment framework.
 
+### `analysis/mac_array_*.py` and `analysis/run_mac_array_framework.py`
+
+These files are the v2 extension layer that turns the repo from a static comparison into a reusable decision framework.
+
+Their division of responsibility is intentionally small and explicit:
+
+- `mac_array_types.py`: typed data models for grids, architectures, workloads, and summaries.
+- `mac_array_evidence.py`: validated evidence loading plus per-field provenance and switching-cost helpers.
+- `mac_array_workloads.py`: workload parsing and validation.
+- `mac_array_metrics.py`: static-resource derivation plus workload-aware throughput/utilization/efficiency calculations.
+- `mac_array_adaptive.py`: adaptive mode switching and break-even analysis.
+- `mac_array_policy.py`: rules-based architecture recommendation logic.
+- `mac_array_regime.py`: bounded winner-map generation plus adaptive rejection surfaces.
+- `mac_array_refresh.py`: selective measured-refresh manifesting and honest measured-vs-modelled proxy comparison.
+- `mac_array_report.py`: report, CSV/JSON, plot, and progress-log generation.
+- `run_mac_array_framework.py`: top-level CLI that ties the whole v2 flow together.
+
+This layer intentionally does not invoke Vivado. It reuses the checked-in aggregates as measured evidence, combines them with explicit static MAC-array anchors, and writes deterministic outputs under `results/fpga/framework_v2/`.
+
+The main non-code evidence input for this layer is `experiments/configs/mac_array_architecture_evidence.json`, which acts as a small evidence registry rather than burying static anchors and switching assumptions inside the top-level framework config.
+
+The v2 layer also now emits a bounded regime map. This is not an exhaustive search; it is a disciplined sweep over grid, workload, budget class, and throughput class so the repo can show where `baseline`, `shared`, `replicated`, or `adaptive_mode_switching` wins without exploding into unreadable parameter space.
+
+The newer measured-refresh helper under `experiments/run_measured_refresh.py` deliberately sits beside this layer rather than inside it. That is because the fast path stays analytical by default; measured refresh is a selective escalation path that maps a few representative regime points onto what the current CNN Vivado flow can honestly proxy.
+
 ## Results and Generated Artifacts
 
 ### `weights/`
@@ -788,6 +824,38 @@ Typical contents include:
 - `verilator_perf/` subdirectories when compute metrics are collected.
 
 The checked-in repo snapshot mostly includes aggregates rather than all per-run directories, which is normal for a source repository.
+
+The Vivado experiment runner can now also emit queue-management artifacts here when resource-aware scheduling is enabled:
+
+- `scheduler_queue.*`: deterministic launch queue preview,
+- `scheduler.log`: launch/block/complete events,
+- `scheduler_summary.json`: concise summary of the queue execution settings and outcomes.
+
+### `results/fpga/framework_v2/`
+
+This is the generated output root for the newer workload-aware MAC-array framework.
+
+Important artifacts include:
+
+- `framework_report.md`: the top-level v2 narrative,
+- `evidence_registry.*`: source ids, derivations, and evidence kinds for the architecture/switching layer,
+- `provenance_summary.*`: compact breakdown of evidence kinds,
+- `workload_manifest.*`: explicit workload descriptors and notes,
+- `static_architectures.*`: canonical architecture/grid evidence table,
+- `workload_evaluations.*`: fixed-mode workload metrics,
+- `adaptive_evaluations.*`: switching-adjusted workload results,
+- `adaptive_constraint_evaluations.*`: constraint-filtered adaptive candidates used by the policy layer,
+- `adaptive_phase_decisions.*`: per-phase chosen modes plus transition-cost details,
+- `break_even.*`: minimum phase duration before switching pays off,
+- `policy_recommendations.*`: explicit recommendation table,
+- `policy_diagnostics.*`: candidate-by-candidate feasibility and rejection reasons,
+- `legacy_measured_summary.json`: extracted summary of the older checked-in measured FPGA study,
+- `regime_map.*`, `regime_summary.*`, `regime_rejection_summary.*`, and `adaptive_rejection_surface.*`: bounded winner/rejection products for the regime analysis layer,
+- `regime_insights.*`: presentation-oriented summaries derived directly from the generated regime outputs,
+- `plots/regime_winner_heatmaps.png`: compact winner surface by grid/workload/budget/throughput,
+- `plots/adaptive_rejection_surface.png`: dominant adaptive rejection reason by grid/workload,
+- `measured_refresh/`: optional selective measured-refresh manifest, generated one-run configs, queue preview data, and measured-vs-modelled comparison outputs,
+- `progress_log.md`: concise rationale for what the v2 layer added.
 
 ### `results/verilator/batch/`
 

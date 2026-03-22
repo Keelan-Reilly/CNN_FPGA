@@ -134,6 +134,50 @@ python3 experiments/analyze_latency_model.py --input results/fpga/aggregates/stu
 python3 analysis/fpga_plot.py --aggregate results/fpga/aggregates/study_dense_parallel_scaling_model.csv --x-param DENSE_OUT_PAR
 ```
 
+### MAC-array framework v2
+
+Run the workload-aware, constraint-aware MAC-array framework:
+
+```bash
+make fpga_framework_v2
+python3 analysis/run_mac_array_framework.py --config experiments/configs/mac_array_framework_v2.json
+```
+
+Run the deterministic unit tests for the new logic:
+
+```bash
+make test
+```
+
+The v2 flow writes a reproducible results pack under `results/fpga/framework_v2/`, including:
+
+- `framework_report.md`
+- `evidence_registry.csv/json`
+- `provenance_summary.csv/json`
+- `workload_manifest.csv/json`
+- `static_architectures.csv/json`
+- `workload_evaluations.csv/json`
+- `adaptive_evaluations.csv/json`
+- `adaptive_constraint_evaluations.csv/json`
+- `adaptive_phase_decisions.csv/json`
+- `break_even.csv/json`
+- `policy_recommendations.csv/json`
+- `policy_diagnostics.csv/json`
+- `regime_map.csv/json`
+- `regime_summary.csv/json`
+- `regime_rejection_summary.csv/json`
+- `adaptive_rejection_surface.csv/json`
+- `regime_insights.csv/json`
+- `regime_insights.md`
+- `plots/regime_winner_heatmaps.png`
+- `plots/adaptive_rejection_surface.png`
+
+Measured vs modelled status in the v2 pack:
+
+- Measured: the checked-in CNN baseline and dense-parallel study aggregates.
+- Anchored: the prior MAC-array static evidence carried in `experiments/configs/mac_array_architecture_evidence.json`.
+- Modelled: workload-aware metrics, adaptive switching, break-even thresholds, and architecture recommendations.
+
 ### Output policy
 
 - New generated outputs should go under `results/`.
@@ -196,6 +240,61 @@ The timing-target sweep checks `80 MHz`, `100 MHz`, and `125 MHz` targets.
 
 This makes `100 MHz` the practical reference point for the current checked-in study.
 
+### Framework v2 takeaway
+
+The repo now also includes a reusable MAC-array decision layer under `results/fpga/framework_v2/`. Its current checked-in narrative is:
+
+- `shared` is preferred when DSP/LUT budgets are tight and the 8x8 shared anchor can halve DSP demand from `64` to `32`.
+- `baseline` is preferred when throughput targets matter more than raw resource efficiency.
+- `replicated` can become the right fixed mode for phase-changing demand on smaller grids, but 8x8 replicated remains ruled out by the preserved Artix-7 implementation-failure evidence.
+- the bounded regime map currently finds no adaptive win region, which is reported explicitly rather than hidden.
+- adaptive analysis is now constraint-filtered and provenance-tagged; under the tighter pair-aware switching model it is currently conservative rather than over-eager.
+- the presentation pack now includes winner heatmaps and an adaptive rejection surface so the no-win story is inspectable instead of implicit.
+
+### Selective measured refresh
+
+Framework-v2 stays analytical by default, but the repo now also supports a small selective measured-refresh loop grounded in the regime outputs:
+
+```bash
+make fpga_refresh_preview
+python3 experiments/run_measured_refresh.py --preview-scheduler --scheduler resource-aware --max-concurrent-jobs 2 --cpu-threshold-pct 85 --min-free-mem-gb 4 --per-job-mem-gb 8 --vivado-jobs-override 2
+```
+
+This writes `results/fpga/framework_v2/measured_refresh/` with:
+
+- `measured_refresh_manifest.csv/json`: representative regime points chosen for refresh.
+- `measured_refresh_queue.csv/json`: single-run generated configs that can be previewed or executed through the scheduler.
+- `measured_model_comparison.csv/json`: honest measured-vs-modelled proxy comparison rows.
+- `comparison_summary.md`: short narrative of what agrees, what is only proxy evidence, and what is not directly measurable yet.
+
+Current scope is intentionally conservative:
+
+- baseline/shared/replicated refreshes are proxy checks against the existing CNN Vivado study family, not direct MAC-array RTL measurements,
+- adaptive has no direct measured-refresh path yet and is marked `not_directly_measurable_with_current_rtl`,
+- the generated preview queue is selective and only contains the chosen representative runs, not the full original study configs.
+
+### Optional Vivado queueing
+
+Vivado remains optional. The default fast path is still the analytical/modelled framework.
+
+When you do want measured refreshes, the existing experiment runner now supports an optional conservative resource-aware queue:
+
+```bash
+make fpga_queue_preview CFG=experiments/configs/study_dense_parallel_scaling.json
+make fpga_experiments_parallel CFG=experiments/configs/study_dense_parallel_scaling.json
+python3 experiments/run_fpga_experiments.py --config experiments/configs/study_dense_parallel_scaling.json --scheduler resource-aware --dry-run --max-concurrent-jobs 2 --cpu-threshold-pct 85 --min-free-mem-gb 4 --per-job-mem-gb 8 --vivado-jobs-override 2
+```
+
+The scheduler is conservative and optional:
+
+- `--scheduler resource-aware` enables resource gating
+- `--dry-run` previews the deterministic queue without launching Vivado
+- `--max-concurrent-jobs` caps concurrent runs
+- `--cpu-threshold-pct`, `--min-free-mem-gb`, and `--per-job-mem-gb` control launch gating
+- `--vivado-jobs-override` limits threads per Vivado run when desired
+
+Scheduler artifacts are written beside the run directories, including `scheduler_queue.*`, `scheduler.log`, and `scheduler_summary.json`.
+
 ## Repository Layout
 
 ```text
@@ -206,7 +305,7 @@ This makes `100 MHz` the practical reference point for the current checked-in st
 ├─ weights/             fixed-point weight and input memory files
 ├─ fpga/vivado/         Vivado batch scripts and report parsing
 ├─ experiments/         experiment configs and orchestration scripts
-├─ analysis/            summary and plotting tools for aggregate results
+├─ analysis/            summary, plotting, and framework-v2 analysis tools
 ├─ docs/                auxiliary documentation
 ├─ results/             canonical generated-output root
 ├─ report.md            full study write-up
@@ -218,6 +317,7 @@ This makes `100 MHz` the practical reference point for the current checked-in st
 
 - The current top-level design is single-frame and sequential; stages are not overlapped.
 - Reported study latency is compute-only (`frame_loaded -> tx_start`), not UART-dominated wall-clock end-to-end time.
+- The framework-v2 adaptive outputs are analytical and clearly labelled as modelled, not hardware-measured reconfiguration data.
 - Batch simulation assumes MNIST raw files at `data/MNIST/raw/` unless you override `ARGS`.
 - The repo includes UART-connected hardware logic, but it does not currently document a full board programming or flashing workflow.
 - Fixed-point scaling and exported `.mem` files must stay aligned with the RTL parameters.

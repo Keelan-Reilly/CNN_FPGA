@@ -185,7 +185,50 @@ For the current dense-parallel sweep, the model matches the measured data exactl
 5. Precision mostly affects implementation cost rather than schedule. In the tested range, latency cycles stay fixed while LUT, FF, and BRAM usage rise with bit width.
 6. A small analytical model is sufficient for this architecture. Because the datapath is sequential and the dense sweep isolates one stage, a fixed-plus-dense model is enough to explain the measured behavior.
 
-## 10. Reproducibility
+## 10. Framework V2 Extension
+
+The repository now includes a second analysis layer aimed at a different question:
+
+> Given workload characteristics and hardware/resource constraints, when should a designer choose baseline, shared, replicated, or adaptive mode switching?
+
+This extension lives under `analysis/run_mac_array_framework.py` and emits a checked-in results pack under `results/fpga/framework_v2/`.
+
+What it preserves:
+
+- the measured CNN baseline characterization,
+- the measured dense-parallel scaling sweep,
+- the timing-closure realism already visible in the checked-in Artix-7-oriented results.
+
+What it adds:
+
+- a first-class architecture evidence registry with explicit record ids, value kinds, derivations, and source paths,
+- explicit workload classes: `dense_steady`, `short_burst`, `underfilled`, `phase_changing`,
+- workload descriptors such as phase count, burstiness, and utilization variance,
+- richer normalized metrics such as throughput per cycle, DSP efficiency, LUT efficiency, and utilization estimates,
+- a lightweight pair-aware adaptive switching-cost model,
+- break-even analysis for when switching is worth paying for,
+- a rules-based architecture selection policy under DSP/LUT and throughput constraints, with runner-ups and rejection reasons.
+- a bounded regime-analysis layer with compact winner surfaces and adaptive rejection summaries.
+- a selective measured-refresh loop that maps a few representative regime points onto what the current Vivado flow can honestly proxy.
+
+What remains modelled rather than measured:
+
+- workload-aware latency/throughput estimates for the MAC-array architecture family,
+- switching-adjusted throughput for adaptive mode changes,
+- break-even thresholds and recommendation tables.
+
+The checked-in `results/fpga/framework_v2/framework_report.md` captures the strongest current v2 conclusions. In the current pack:
+
+- `shared` wins when the budget is tight and the 8x8 `64 -> 32 DSP` anchor matters most,
+- `baseline` wins when throughput/latency targets dominate and the larger fixed mode is still feasible,
+- `replicated` is only recommended in a narrow high-demand 4x4 phase-changing window,
+- adaptive candidates are now evaluated under the same DSP/LUT/timing constraints as fixed modes, which makes the current framework more conservative about recommending switching,
+- the bounded regime map currently finds no adaptive win region under the current evidence-backed assumptions,
+- the new regime presentation layer makes that no-win result explicit by showing adaptive rejection surfaces dominated by `adaptive_gain_too_small`,
+- the selective measured-refresh path currently offers proxy-only checks against the checked-in CNN studies, not direct MAC-array RTL validation,
+- 8x8 replicated remains excluded on Artix-7 because the framework preserves that implementation failure as evidence.
+
+## 11. Reproducibility
 
 The full study can be reproduced from the experiment configs already in the repository:
 
@@ -199,6 +242,8 @@ python3 analysis/fpga_plot.py --experiment-id study_dense_parallel_scaling --x-p
 python3 analysis/fpga_plot.py --aggregate results/fpga/aggregates/study_dense_parallel_scaling_model.csv --x-param DENSE_OUT_PAR
 python3 analysis/fpga_plot.py --experiment-id study_precision_resource --x-param DATA_WIDTH
 python3 analysis/fpga_plot.py --experiment-id study_timing_target --x-param CLK_FREQ_HZ
+python3 analysis/run_mac_array_framework.py --config experiments/configs/mac_array_framework_v2.json
+python3 experiments/run_measured_refresh.py --preview-scheduler --scheduler resource-aware --max-concurrent-jobs 2 --cpu-threshold-pct 85 --min-free-mem-gb 4 --per-job-mem-gb 8 --vivado-jobs-override 2
 ```
 
 The main datasets used in this report are:
@@ -208,3 +253,6 @@ The main datasets used in this report are:
 - `results/fpga/aggregates/study_dense_parallel_scaling_model.csv`
 - `results/fpga/aggregates/study_precision_resource.csv`
 - `results/fpga/aggregates/study_timing_target.csv`
+- `results/fpga/framework_v2/framework_report.md`
+- `results/fpga/framework_v2/regime_insights.md`
+- `results/fpga/framework_v2/measured_refresh/comparison_summary.md`

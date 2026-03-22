@@ -1,0 +1,247 @@
+{
+  "version": "1.0",
+  "architectures": {
+    "baseline": {
+      "description": "Direct spatial mapping with one MAC-equivalent DSP per grid position.",
+      "models": {
+        "dsp": {
+          "record_id": "model_baseline_dsp_scale_v1",
+          "formula": "dsp = ceil(mac_units * dsp_scale)",
+          "parameters": {"dsp_scale": 1.0},
+          "value_kind": "architecture_semantics",
+          "source_desc": "Baseline spatial mapping uses one DSP-equivalent per MAC position."
+        },
+        "lut": {
+          "record_id": "model_baseline_lut_linear_v1",
+          "formula": "lut = lut_fixed + lut_per_mac * mac_units",
+          "parameters": {"lut_fixed": 180.0, "lut_per_mac": 30.0},
+          "value_kind": "analytical_linear_model",
+          "source_desc": "Lightweight linear LUT envelope used to compare architectures on a common normalized basis."
+        },
+        "wns_estimate_ns": {
+          "record_id": "model_baseline_wns_linear_v1",
+          "formula": "wns = wns_bias_ns - wns_per_effective_mac * mac_units * capacity_scale",
+          "parameters": {"wns_bias_ns": 1.0, "wns_per_effective_mac": 0.012},
+          "value_kind": "analytical_linear_model",
+          "source_desc": "Simple timing-risk trend model used only when no measured timing anchor exists."
+        },
+        "execution": {
+          "record_id": "model_baseline_execution_v1",
+          "formula": "capacity_scale, latency_penalty_fraction, and fixed_phase_overhead_cycles come from architecture semantics",
+          "parameters": {
+            "capacity_scale": 1.0,
+            "latency_penalty_fraction": 0.0,
+            "fixed_phase_overhead_cycles": 8,
+            "default_implementation_status": "implementation_feasible_modelled"
+          },
+          "value_kind": "architecture_semantics",
+          "source_desc": "Baseline has no sharing penalty and serves as the reference execution model."
+        }
+      }
+    },
+    "shared": {
+      "description": "Time-multiplexed compute that reduces DSP demand at the cost of control/latency overhead.",
+      "models": {
+        "dsp": {
+          "record_id": "model_shared_dsp_scale_v1",
+          "formula": "dsp = ceil(mac_units * dsp_scale)",
+          "parameters": {"dsp_scale": 0.5},
+          "value_kind": "architecture_semantics",
+          "source_desc": "Shared mode assumes two logical MAC positions are time-multiplexed onto one DSP-equivalent resource."
+        },
+        "lut": {
+          "record_id": "model_shared_lut_linear_v1",
+          "formula": "lut = lut_fixed + lut_per_mac * mac_units",
+          "parameters": {"lut_fixed": 220.0, "lut_per_mac": 18.0},
+          "value_kind": "analytical_linear_model",
+          "source_desc": "Shared control overhead raises the fixed term while reducing per-MAC datapath LUT cost."
+        },
+        "wns_estimate_ns": {
+          "record_id": "model_shared_wns_linear_v1",
+          "formula": "wns = wns_bias_ns - wns_per_effective_mac * mac_units * capacity_scale",
+          "parameters": {"wns_bias_ns": 0.9, "wns_per_effective_mac": 0.012},
+          "value_kind": "analytical_linear_model",
+          "source_desc": "Shared mode timing estimate follows the same simple trend model with a slightly lower bias."
+        },
+        "execution": {
+          "record_id": "model_shared_execution_v1",
+          "formula": "capacity_scale, latency_penalty_fraction, and fixed_phase_overhead_cycles come from sharing semantics",
+          "parameters": {
+            "capacity_scale": 1.0,
+            "latency_penalty_fraction": 0.12,
+            "fixed_phase_overhead_cycles": 16,
+            "default_implementation_status": "implementation_feasible_modelled"
+          },
+          "value_kind": "analytical_execution_model",
+          "source_desc": "Shared mode keeps nominal spatial capacity but adds replay/control overhead that inflates phase latency."
+        }
+      }
+    },
+    "replicated": {
+      "description": "Duplicated compute intended to preserve throughput at higher resource cost.",
+      "models": {
+        "dsp": {
+          "record_id": "model_replicated_dsp_scale_v1",
+          "formula": "dsp = ceil(mac_units * dsp_scale)",
+          "parameters": {"dsp_scale": 2.0},
+          "value_kind": "architecture_semantics",
+          "source_desc": "Replicated mode duplicates compute lanes, doubling DSP-equivalent demand relative to baseline."
+        },
+        "lut": {
+          "record_id": "model_replicated_lut_linear_v1",
+          "formula": "lut = lut_fixed + lut_per_mac * mac_units",
+          "parameters": {"lut_fixed": 260.0, "lut_per_mac": 44.0},
+          "value_kind": "analytical_linear_model",
+          "source_desc": "Replicated mode carries a larger fixed and per-MAC control/data-path cost envelope."
+        },
+        "wns_estimate_ns": {
+          "record_id": "model_replicated_wns_linear_v1",
+          "formula": "wns = wns_bias_ns - wns_per_effective_mac * mac_units * capacity_scale",
+          "parameters": {"wns_bias_ns": 0.7, "wns_per_effective_mac": 0.012},
+          "value_kind": "analytical_linear_model",
+          "source_desc": "Replicated mode is assigned the weakest timing bias because routing pressure grows with duplicated compute."
+        },
+        "execution": {
+          "record_id": "model_replicated_execution_v1",
+          "formula": "capacity_scale, latency_penalty_fraction, and fixed_phase_overhead_cycles come from replication semantics",
+          "parameters": {
+            "capacity_scale": 2.0,
+            "latency_penalty_fraction": 0.03,
+            "fixed_phase_overhead_cycles": 18,
+            "default_implementation_status": "implementation_risky_modelled"
+          },
+          "value_kind": "analytical_execution_model",
+          "source_desc": "Replicated mode doubles effective capacity while keeping only a small coordination overhead."
+        }
+      }
+    }
+  },
+  "field_overrides": [
+    {
+      "record_id": "anchor_8x8_baseline_dsp_prior_study",
+      "grid": "8x8",
+      "architecture": "baseline",
+      "field": "dsp",
+      "value": 64,
+      "value_kind": "anchored_prior_study_fact",
+      "source_desc": "Canonical prior MAC-array study anchor for baseline 8x8 DSP usage.",
+      "derivation": "direct anchored fact carried forward from earlier static architecture study"
+    },
+    {
+      "record_id": "anchor_8x8_shared_dsp_prior_study",
+      "grid": "8x8",
+      "architecture": "shared",
+      "field": "dsp",
+      "value": 32,
+      "value_kind": "anchored_prior_study_fact",
+      "source_desc": "Canonical prior MAC-array study anchor showing 8x8 shared halves DSP demand.",
+      "derivation": "direct anchored fact carried forward from earlier static architecture study"
+    },
+    {
+      "record_id": "anchor_8x8_shared_note_prior_study",
+      "grid": "8x8",
+      "architecture": "shared",
+      "field": "note",
+      "value": "Prior study anchor: 8x8 shared reduces DSP from 64 to 32 with only a small latency increase.",
+      "value_kind": "anchored_prior_study_fact",
+      "source_desc": "Qualitative static-study note preserved for interpretability.",
+      "derivation": "direct anchored note"
+    },
+    {
+      "record_id": "anchor_8x8_replicated_impl_status_prior_study",
+      "grid": "8x8",
+      "architecture": "replicated",
+      "field": "implementation_status",
+      "value": "synth_only_impl_failed_on_artix7_measured",
+      "value_kind": "anchored_prior_study_fact",
+      "source_desc": "Prior study anchor preserving Artix-7 implementation failure for 8x8 replicated.",
+      "derivation": "direct anchored fact carried forward from earlier static architecture study"
+    },
+    {
+      "record_id": "anchor_8x8_replicated_wns_prior_study",
+      "grid": "8x8",
+      "architecture": "replicated",
+      "field": "wns_estimate_ns",
+      "value": -0.35,
+      "value_kind": "anchored_prior_study_fact",
+      "source_desc": "Negative timing anchor used to preserve 8x8 replicated timing failure evidence.",
+      "derivation": "anchored timing indicator carried forward from earlier static architecture study"
+    }
+  ],
+  "switching": {
+    "default_components": [
+      {
+        "name": "phase_boundary_quiesce",
+        "cycles": 240,
+        "value_kind": "analytical_component",
+        "source_desc": "Controller drains the current phase and quiesces outstanding work."
+      },
+      {
+        "name": "mode_select_and_state_programming",
+        "cycles": 320,
+        "value_kind": "analytical_component",
+        "source_desc": "Mode-select/control state is updated before the next phase starts."
+      },
+      {
+        "name": "scratch_state_warmup",
+        "cycles": 640,
+        "value_kind": "analytical_component",
+        "source_desc": "Buffers and counters are warmed for the next mode at phase boundaries."
+      }
+    ],
+    "pair_overrides": [
+      {
+        "record_id": "switch_shared_to_baseline_v1",
+        "from_mode": "shared",
+        "to_mode": "baseline",
+        "source_desc": "Shared->baseline requires less warmup than shared->replicated.",
+        "components": [
+          {
+            "name": "phase_boundary_quiesce",
+            "cycles": 240,
+            "value_kind": "analytical_component",
+            "source_desc": "Controller drains the previous shared phase."
+          },
+          {
+            "name": "mode_select_and_state_programming",
+            "cycles": 280,
+            "value_kind": "analytical_component",
+            "source_desc": "Select baseline mode and program control state."
+          },
+          {
+            "name": "scratch_state_warmup",
+            "cycles": 520,
+            "value_kind": "analytical_component",
+            "source_desc": "Warm buffers/counters for baseline mode."
+          }
+        ]
+      },
+      {
+        "record_id": "switch_shared_to_replicated_v1",
+        "from_mode": "shared",
+        "to_mode": "replicated",
+        "source_desc": "Shared->replicated requires extra warmup to activate duplicated lanes.",
+        "components": [
+          {
+            "name": "phase_boundary_quiesce",
+            "cycles": 240,
+            "value_kind": "analytical_component",
+            "source_desc": "Controller drains the previous shared phase."
+          },
+          {
+            "name": "mode_select_and_state_programming",
+            "cycles": 360,
+            "value_kind": "analytical_component",
+            "source_desc": "Select replicated mode and program lane control state."
+          },
+          {
+            "name": "scratch_state_warmup",
+            "cycles": 840,
+            "value_kind": "analytical_component",
+            "source_desc": "Warm duplicated execution lanes and counters."
+          }
+        ]
+      }
+    ]
+  }
+}

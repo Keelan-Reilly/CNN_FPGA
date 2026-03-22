@@ -18,7 +18,7 @@ VERILATOR_FLAGS := -sv -Wall -Wno-fatal --trace \
 ARGS            ?=
 
 # -------- Phony targets --------
-.PHONY: all build run run_full run_batch run_batch_vcd fpga_experiments fpga_experiments_sweep fpga_summary fpga_plots clean realclean help
+.PHONY: all build run run_full run_batch run_batch_vcd fpga_experiments fpga_experiments_sweep fpga_experiments_parallel fpga_queue_preview fpga_summary fpga_plots fpga_framework_v2 fpga_refresh_preview fpga_refresh_execute test clean realclean help
 
 all: run
 
@@ -52,6 +52,15 @@ fpga_experiments:
 fpga_experiments_sweep:
 	python3 experiments/run_fpga_experiments.py --config experiments/configs/sweep_bitwidth.json
 
+CFG ?= experiments/configs/study_dense_parallel_scaling.json
+SCHED_ARGS ?= --scheduler resource-aware --max-concurrent-jobs 2 --cpu-threshold-pct 85 --min-free-mem-gb 4 --per-job-mem-gb 8 --vivado-jobs-override 2
+
+fpga_experiments_parallel:
+	python3 experiments/run_fpga_experiments.py --config $(CFG) $(SCHED_ARGS)
+
+fpga_queue_preview:
+	python3 experiments/run_fpga_experiments.py --config $(CFG) $(SCHED_ARGS) --dry-run
+
 EXP ?= baseline_fpga
 
 fpga_summary:
@@ -59,6 +68,18 @@ fpga_summary:
 
 fpga_plots:
 	python3 analysis/fpga_plot.py --experiment-id $(EXP)
+
+fpga_framework_v2:
+	python3 analysis/run_mac_array_framework.py --config experiments/configs/mac_array_framework_v2.json
+
+fpga_refresh_preview:
+	python3 experiments/run_measured_refresh.py --preview-scheduler $(SCHED_ARGS)
+
+fpga_refresh_execute:
+	python3 experiments/run_measured_refresh.py --execute $(SCHED_ARGS)
+
+test:
+	python3 -m unittest discover -s tests -v
 
 clean:
 	rm -rf $(BUILD_DIR) *.vcd $(BATCH_OUT_DIR) batch_out
@@ -75,8 +96,14 @@ help:
 	@echo "  make run_batch_vcd        - batch TB + per-failure VCDs"
 	@echo "  make fpga_experiments     - run baseline Vivado experiment config"
 	@echo "  make fpga_experiments_sweep - run bitwidth sweep Vivado config"
+	@echo "  make fpga_experiments_parallel CFG=<config> - run optional resource-aware Vivado queue"
+	@echo "  make fpga_queue_preview CFG=<config>        - preview the optional Vivado queue without launching jobs"
 	@echo "  make fpga_summary EXP=<experiment_id> - print aggregate summary table (default EXP=baseline_fpga)"
 	@echo "  make fpga_plots EXP=<experiment_id>   - generate architecture-study plots (default EXP=baseline_fpga)"
+	@echo "  make fpga_framework_v2      - run workload-aware MAC-array framework v2 analysis"
+	@echo "  make fpga_refresh_preview   - build selective measured-refresh artifacts and preview the runnable queue"
+	@echo "  make fpga_refresh_execute   - run the selective measured-refresh queue with the same scheduler knobs"
+	@echo "  make test                   - run deterministic Python unit tests"
 	@echo ""
 	@echo "Overrides:"
 	@echo "  make run TB=tb/tb_batch_pipeline.cpp ARGS='--count 200 --start 0'"

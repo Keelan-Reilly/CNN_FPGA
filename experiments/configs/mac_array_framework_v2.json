@@ -1,0 +1,92 @@
+{
+  "experiment_id": "mac_array_framework_v2",
+  "platform": "Artix-7",
+  "source_aggregates": {
+    "baseline_characterization": "results/fpga/aggregates/study_baseline_characterization.json",
+    "dense_parallel_scaling": "results/fpga/aggregates/study_dense_parallel_scaling.json"
+  },
+  "evidence_path": "experiments/configs/mac_array_architecture_evidence.json",
+  "grids": [
+    {"label": "4x4", "rows": 4, "cols": 4},
+    {"label": "8x4", "rows": 8, "cols": 4},
+    {"label": "8x8", "rows": 8, "cols": 8}
+  ],
+  "adaptive_modes": ["shared", "baseline", "replicated"],
+  "candidate_pairs": [
+    ["shared", "baseline"],
+    ["shared", "replicated"]
+  ],
+  "constraints": [
+    {
+      "name": "budget_tight_8x8",
+      "target_grid": "8x8",
+      "dsp_budget": 40,
+      "lut_budget": 1800,
+      "min_throughput_ops_per_cycle": 14.0
+    },
+    {
+      "name": "balanced_8x8",
+      "target_grid": "8x8",
+      "dsp_budget": 80,
+      "lut_budget": 2600,
+      "min_throughput_ops_per_cycle": 24.0
+    },
+    {
+      "name": "latency_sensitive_8x8",
+      "target_grid": "8x8",
+      "dsp_budget": 80,
+      "lut_budget": 2600,
+      "min_throughput_ops_per_cycle": 50.0
+    },
+    {
+      "name": "throughput_push_8x4",
+      "target_grid": "8x4",
+      "dsp_budget": 80,
+      "lut_budget": 2200,
+      "min_throughput_ops_per_cycle": 36.0
+    },
+    {
+      "name": "replication_window_4x4",
+      "target_grid": "4x4",
+      "dsp_budget": 40,
+      "lut_budget": 1200,
+      "min_throughput_ops_per_cycle": 15.0
+    }
+  ],
+  "workloads": [
+    {
+      "name": "dense_steady",
+      "workload_class": "dense_steady",
+      "notes": "Sustained high-utilization work where steady-state throughput matters most.",
+      "phases": [
+        {"name": "steady_dense", "ops": 240000, "utilization": 1.0, "parallelism": 1.0, "fixed_overhead_cycles": 24}
+      ]
+    },
+    {
+      "name": "short_burst",
+      "workload_class": "short_burst",
+      "notes": "Short bursts where fixed per-phase overheads dominate.",
+      "phases": [
+        {"name": "short_burst", "ops": 12000, "utilization": 0.95, "parallelism": 1.0, "fixed_overhead_cycles": 220}
+      ]
+    },
+    {
+      "name": "underfilled",
+      "workload_class": "underfilled",
+      "notes": "Work that cannot keep the whole array occupied.",
+      "phases": [
+        {"name": "underfilled_pass", "ops": 90000, "utilization": 0.45, "parallelism": 0.75, "fixed_overhead_cycles": 40}
+      ]
+    },
+    {
+      "name": "phase_changing",
+      "workload_class": "phase_changing",
+      "notes": "A phase-varying stream with alternating low-fill and high-parallelism demand.",
+      "phases": [
+        {"name": "warmup_underfilled", "ops": 30000, "utilization": 0.4, "parallelism": 0.75, "fixed_overhead_cycles": 60},
+        {"name": "sustained_dense", "ops": 180000, "utilization": 1.0, "parallelism": 1.0, "fixed_overhead_cycles": 28},
+        {"name": "parallel_spike", "ops": 160000, "utilization": 0.95, "parallelism": 1.8, "fixed_overhead_cycles": 32}
+      ]
+    }
+  ]
+}
