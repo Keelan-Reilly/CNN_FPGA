@@ -89,6 +89,11 @@ The `Makefile` is the main operator-facing entrypoint:
 - `make fpga_summary`: render a concise aggregate summary table.
 - `make fpga_plots`: generate plots from an aggregate dataset.
 - `make fpga_framework_v2`: generate the workload-aware MAC-array framework v2 results pack.
+- `make fpga_mac_direct_preview`: preview the directly measurable MAC-array baseline queue.
+- `make fpga_mac_direct_4x4`: run one scoped 4x4 direct MAC-array baseline point.
+- `make fpga_mac_direct_8x4`: run one scoped 8x4 direct MAC-array baseline point.
+- `make fpga_mac_direct_8x8`: run one scoped 8x8 direct MAC-array baseline point.
+- `make fpga_mac_direct_report`: generate direct measured-vs-modelled slice artifacts.
 - `make fpga_refresh_preview`: generate the selective measured-refresh manifest and preview only the runnable queue.
 - `make fpga_refresh_execute`: run the same selective refresh queue through the optional scheduler.
 - `make test`: run the deterministic Python unit tests for the newer analysis logic.
@@ -107,6 +112,22 @@ The most important design theme across the RTL is explicit accommodation of sync
 - data-valid alignment is done with explicit pipeline registers,
 - shared memories are multiplexed only when stage ownership is known,
 - the top level tracks stage-active flags to prevent accidental concurrent access.
+
+
+### `hdl/mac_array_direct_top.sv`
+
+This file is the smallest standalone directly measurable MAC-array RTL slice in the repository.
+
+It is intentionally narrow:
+
+- baseline spatial mapping only,
+- parameterized by `ARRAY_ROWS`, `ARRAY_COLS`, and `K_DEPTH`,
+- no shared/replicated/adaptive hardware modes yet,
+- designed to ride the existing Vivado batch flow and the newer evidence/report pipeline.
+
+Architecturally, it instantiates one MAC-style cell per grid position and runs a fixed synthetic workload so DSP/LUT/timing and direct cycle measurements can be collected without pulling in the full CNN datapath.
+
+The current checked-in direct baseline calibration set uses this top to measure `4x4`, `8x4`, and `8x8` baseline points at `K_DEPTH=32`. Those points now serve as the repo's first true MAC-array-specific calibration evidence for the lightweight framework model.
 
 ### `hdl/top_level.sv`
 

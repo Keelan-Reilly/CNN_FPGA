@@ -251,6 +251,45 @@ The repo now also includes a reusable MAC-array decision layer under `results/fp
 - adaptive analysis is now constraint-filtered and provenance-tagged; under the tighter pair-aware switching model it is currently conservative rather than over-eager.
 - the presentation pack now includes winner heatmaps and an adaptive rejection surface so the no-win story is inspectable instead of implicit.
 
+### Direct MAC-array slice
+
+The repo now also has a smallest-possible directly measurable MAC-array foothold: a standalone baseline-only spatial slice in `hdl/mac_array_direct_top.sv` with a dedicated config at `experiments/configs/study_mac_array_direct_baseline.json`. It is intentionally narrow, but it rides the same Vivado and aggregation pipeline as the rest of the repo.
+
+```bash
+make fpga_mac_direct_preview
+make fpga_mac_direct_4x4
+python3 analysis/run_mac_array_direct_slice.py
+```
+
+This path is explicitly separate from the CNN top and from the proxy-only refresh flow:
+
+- it is a direct MAC-array RTL slice,
+- it currently measures `baseline` only,
+- it feeds comparison artifacts into `results/fpga/framework_v2/direct_slice/`,
+- it does not claim direct shared/replicated/adaptive hardware support yet.
+
+The checked-in direct baseline calibration set now covers `4x4`, `8x4`, and `8x8` for `K_DEPTH=32`:
+
+- `4x4`: `16 DSP`, `1061 LUT`, `524 FF`, `WNS = +1.942 ns`, `33` cycles, `15.515 ops/cycle`
+- `8x4`: `32 DSP`, `2134 LUT`, `1036 FF`, `WNS = +2.019 ns`, `33` cycles, `31.030 ops/cycle`
+- `8x8`: `64 DSP`, `4287 LUT`, `2060 FF`, `WNS = +0.634 ns`, `33` cycles, `62.061 ops/cycle`
+
+The direct comparison pack now shows:
+
+- exact DSP agreement across all three measured baseline points,
+- exact direct-slice latency and throughput agreement across all three points,
+- lightweight framework LUT underprediction growing from `401` to `2187` LUT across the tested sizes,
+- a direct-slice-calibrated linear LUT aid in `results/fpga/framework_v2/direct_slice/` that is reported as a baseline-only caution aid rather than a silent framework replacement.
+
+Useful direct-slice commands:
+
+```bash
+make fpga_mac_direct_4x4
+make fpga_mac_direct_8x4
+make fpga_mac_direct_8x8
+make fpga_mac_direct_report
+```
+
 ### Selective measured refresh
 
 Framework-v2 stays analytical by default, but the repo now also supports a small selective measured-refresh loop grounded in the regime outputs:

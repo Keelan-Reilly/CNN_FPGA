@@ -25,7 +25,16 @@ RUN_SCRIPT = REPO_ROOT / "fpga" / "vivado" / "run_batch.sh"
 PARSE_SCRIPT = REPO_ROOT / "fpga" / "vivado" / "parse_reports.py"
 PERF_SCRIPT = REPO_ROOT / "experiments" / "collect_verilator_perf.py"
 
-SUPPORTED_SWEEP_PARAMS = {"DATA_WIDTH", "FRAC_BITS", "CLK_FREQ_HZ", "BAUD_RATE", "DENSE_OUT_PAR"}
+SUPPORTED_SWEEP_PARAMS = {
+    "DATA_WIDTH",
+    "FRAC_BITS",
+    "CLK_FREQ_HZ",
+    "BAUD_RATE",
+    "DENSE_OUT_PAR",
+    "ARRAY_ROWS",
+    "ARRAY_COLS",
+    "K_DEPTH",
+}
 
 
 def utc_now() -> str:
@@ -167,56 +176,68 @@ def parse_metrics(run_dir: Path, clock_period_ns: Any) -> dict[str, Any]:
     return json.loads(metrics_path.read_text())
 
 
-def collect_performance(run_dir: Path, params: dict[str, Any]) -> dict[str, Any]:
+def _empty_performance(clock_hz: int, measurement_source: str, latency_kind: str) -> dict[str, Any]:
+    return {
+        "latency_cycles": None,
+        "latency_time_ms": None,
+        "throughput_inferences_per_sec": None,
+        "effective_throughput_ops_per_cycle": None,
+        "total_operations": None,
+        "stage_cycles_conv": None,
+        "stage_cycles_relu": None,
+        "stage_cycles_pool": None,
+        "stage_cycles_dense": None,
+        "stage_cycles_argmax": None,
+        "bubble_cycles": None,
+        "busy_cycles": None,
+        "tx_wait_cycles": None,
+        "measurement_source": measurement_source,
+        "latency_kind": latency_kind,
+        "clock_hz": clock_hz,
+        "measured_fields": ["latency_cycles"],
+        "derived_fields": ["latency_time_ms", "throughput_inferences_per_sec", "effective_throughput_ops_per_cycle"],
+        "perf_error": True,
+    }
+
+
+def collect_performance(run_dir: Path, params: dict[str, Any], perf_cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    perf_cfg = perf_cfg or {}
+    if perf_cfg.get("enabled", True) is False or perf_cfg.get("script") == "none":
+        return _empty_performance(
+            int(params.get("CLK_FREQ_HZ", 100_000_000)),
+            "performance_collection_disabled",
+            "not_collected",
+        )
+
     perf_dir = run_dir / "verilator_perf"
     perf_json = perf_dir / "performance.json"
     perf_dir.mkdir(parents=True, exist_ok=True)
     clk_hz = int(params.get("CLK_FREQ_HZ", 100_000_000))
+    perf_script = REPO_ROOT / perf_cfg.get("script", str(PERF_SCRIPT.relative_to(REPO_ROOT)))
+    perf_top = perf_cfg.get("top", "top_level")
     cmd = [
         sys.executable,
-        str(PERF_SCRIPT),
+        str(perf_script),
         "--run-dir",
         str(run_dir),
         "--clock-hz",
         str(clk_hz),
+        "--top",
+        str(perf_top),
     ]
     for key in sorted(params.keys()):
         if key in SUPPORTED_SWEEP_PARAMS:
             cmd += ["--generic", f"{key}={params[key]}"]
 
-    helper_log = perf_dir / "collect_verilator_perf.log"
+    helper_log = perf_dir / f"{perf_script.stem}.log"
     with helper_log.open("w") as logf:
         rc = subprocess.run(cmd, cwd=REPO_ROOT, stdout=logf, stderr=subprocess.STDOUT).returncode
     if rc != 0 or not perf_json.exists():
-        return {
-            "latency_cycles": None,
-            "latency_time_ms": None,
-            "throughput_inferences_per_sec": None,
-            "stage_cycles_conv": None,
-            "stage_cycles_relu": None,
-            "stage_cycles_pool": None,
-            "stage_cycles_dense": None,
-            "stage_cycles_argmax": None,
-            "bubble_cycles": None,
-            "busy_cycles": None,
-            "tx_wait_cycles": None,
-            "measurement_source": "verilator_full_pipeline_frame_cycles",
-            "latency_kind": "compute_only",
-            "clock_hz": clk_hz,
-            "measured_fields": [
-                "latency_cycles",
-                "stage_cycles_conv",
-                "stage_cycles_relu",
-                "stage_cycles_pool",
-                "stage_cycles_dense",
-                "stage_cycles_argmax",
-                "bubble_cycles",
-                "busy_cycles",
-                "tx_wait_cycles",
-            ],
-            "derived_fields": ["latency_time_ms", "throughput_inferences_per_sec"],
-            "perf_error": True,
-        }
+        return _empty_performance(
+            clk_hz,
+            perf_cfg.get("measurement_source", "verilator_full_pipeline_frame_cycles"),
+            perf_cfg.get("latency_kind", "compute_only"),
+        )
     return json.loads(perf_json.read_text())
 
 
@@ -255,6 +276,8 @@ def aggregate(experiment_id: str, rows: list[dict[str, Any]]) -> None:
         "latency_cycles",
         "latency_time_ms",
         "throughput_inferences_per_sec",
+        "effective_throughput_ops_per_cycle",
+        "total_operations",
         "stage_cycles_conv",
         "stage_cycles_relu",
         "stage_cycles_pool",
@@ -324,9 +347,10 @@ def finalize_run(
     started: str,
     ended: str,
     duration: float,
+    perf_cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metrics = parse_metrics(run_dir, clock_period_ns)
-    performance = collect_performance(run_dir, params)
+    performance = collect_performance(run_dir, params, perf_cfg)
     metrics["performance"] = performance
     write_json(run_dir / "metrics.json", metrics)
     status = "succeeded" if rc == 0 else "failed"
@@ -367,6 +391,8 @@ def finalize_run(
         "latency_cycles": performance.get("latency_cycles"),
         "latency_time_ms": performance.get("latency_time_ms"),
         "throughput_inferences_per_sec": performance.get("throughput_inferences_per_sec"),
+        "effective_throughput_ops_per_cycle": performance.get("effective_throughput_ops_per_cycle"),
+        "total_operations": performance.get("total_operations"),
         "stage_cycles_conv": performance.get("stage_cycles_conv"),
         "stage_cycles_relu": performance.get("stage_cycles_relu"),
         "stage_cycles_pool": performance.get("stage_cycles_pool"),
@@ -407,6 +433,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cfg = load_config(Path(args.config))
+    perf_cfg = cfg.get("performance", {})
     experiment_id = sanitize_id(args.experiment_id or cfg.get("experiment_id", "fpga_experiment"))
 
     vivado_cfg = cfg.get("vivado", {})
@@ -474,6 +501,7 @@ def main() -> int:
                     started=started,
                     ended=ended,
                     duration=duration,
+                    perf_cfg=perf_cfg,
                 )
             )
             if rc != 0 and args.fail_fast:
@@ -537,6 +565,7 @@ def main() -> int:
                         started=item["started"],
                         ended=ended,
                         duration=duration,
+                        perf_cfg=perf_cfg,
                     )
                 )
                 scheduler_log(

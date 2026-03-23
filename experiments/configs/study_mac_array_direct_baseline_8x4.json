@@ -1,0 +1,28 @@
+{
+  "experiment_id": "study_mac_array_direct_baseline_8x4",
+  "vivado": {
+    "part": "xc7a35tcpg236-1",
+    "top": "mac_array_direct_top",
+    "xdc": "fpga/vivado/mac_array_direct_constraints.xdc",
+    "jobs": 2
+  },
+  "clock_period_ns": 10.0,
+  "base_params": {
+    "DATA_WIDTH": 16,
+    "ARRAY_ROWS": 8,
+    "ARRAY_COLS": 4,
+    "K_DEPTH": 32,
+    "CLK_FREQ_HZ": 100000000
+  },
+  "runs": [
+    {
+      "run_id": "mac_array_baseline_8x4_k32"
+    }
+  ],
+  "performance": {
+    "script": "experiments/collect_mac_array_direct_perf.py",
+    "top": "mac_array_direct_top",
+    "measurement_source": "verilator_mac_array_direct_slice",
+    "latency_kind": "fixed_mac_array_workload"
+  }
+}
