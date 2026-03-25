@@ -108,6 +108,7 @@ Supported sweep/generic parameters in the current flow:
 - `CLK_FREQ_HZ`
 - `BAUD_RATE`
 - `DENSE_OUT_PAR`
+- `ARRAY_ROWS`, `ARRAY_COLS`, `K_DEPTH`, and `ARCH_MODE` for the isolated direct MAC-array slice flow
 
 ### Summaries, plots, and latency model
 
@@ -174,7 +175,7 @@ The v2 flow writes a reproducible results pack under `results/fpga/framework_v2/
 
 Measured vs modelled status in the v2 pack:
 
-- Measured: the checked-in CNN baseline and dense-parallel study aggregates.
+- Measured: the checked-in CNN baseline and dense-parallel study aggregates, plus the direct MAC-array slice baseline measurements and two directly measured shared implementations at 4x4.
 - Anchored: the prior MAC-array static evidence carried in `experiments/configs/mac_array_architecture_evidence.json`.
 - Modelled: workload-aware metrics, adaptive switching, break-even thresholds, and architecture recommendations.
 
@@ -244,7 +245,13 @@ This makes `100 MHz` the practical reference point for the current checked-in st
 
 The repo now also includes a reusable MAC-array decision layer under `results/fpga/framework_v2/`. Its current checked-in narrative is:
 
-- `shared` is preferred when DSP/LUT budgets are tight and the 8x8 shared anchor can halve DSP demand from `64` to `32`.
+- the framework's `shared` recommendation now refers to the modelled shared family, not the directly measured 4x4 and 8x4 shared implementations; at 8x8 it still uses the prior `64 -> 32 DSP` anchor, but that is now clearly separated from the measured direct slices.
+- the direct slice now shows that sharing is not one thing: `shared_lut_saving` buys LUT relief, while `shared_dsp_reducing` buys DSP relief on this Artix-7 flow.
+- the measured 4x4 three-way rule survives the first scale step to 8x4: baseline stays performance-first, `shared_lut_saving` stays LUT-first, and `shared_dsp_reducing` stays DSP-first.
+- the repo now also carries a measured trust boundary: implementation-specific direct-slice roles are directly supported, some shared-family directions are only partially or directionally supported, and broader shared-family claims remain modelled or anchored beyond measured support.
+- the repo now also carries a measured calibration aid: baseline LUT is known to be numerically optimistic in the lightweight model, shared-family latency/throughput direction is well aligned with the measured slice, and shared-family resource projections should be read through an implementation-dependent caution band rather than as direct measured truth.
+- the repo now also carries a measured utility layer: the shared variants are not better in general, they are only worth using when LUT or DSP pressure is the actual bottleneck and that relief matters more than the measured performance loss.
+- the repo now also carries a measured design-rule extraction layer: flexibility is not inherently valuable, and the measured slice shows it is justified only when the bottleneck relieved matters more than the overhead introduced.
 - `baseline` is preferred when throughput targets matter more than raw resource efficiency.
 - `replicated` can become the right fixed mode for phase-changing demand on smaller grids, but 8x8 replicated remains ruled out by the preserved Artix-7 implementation-failure evidence.
 - the bounded regime map currently finds no adaptive win region, which is reported explicitly rather than hidden.
@@ -253,42 +260,79 @@ The repo now also includes a reusable MAC-array decision layer under `results/fp
 
 ### Direct MAC-array slice
 
-The repo now also has a smallest-possible directly measurable MAC-array foothold: a standalone baseline-only spatial slice in `hdl/mac_array_direct_top.sv` with a dedicated config at `experiments/configs/study_mac_array_direct_baseline.json`. It is intentionally narrow, but it rides the same Vivado and aggregation pipeline as the rest of the repo.
+The repo now also has a smallest-possible directly measurable MAC-array foothold: a standalone direct slice in `hdl/mac_array_direct_top.sv` with baseline plus two small shared implementations. The measured bridge is intentionally small and isolated: 4x4 and 8x4 baseline points compared against both a LUT-saving shared slice and a DSP-reducing shared slice through the same Vivado and aggregation pipeline as the rest of the repo.
 
 ```bash
 make fpga_mac_direct_preview
+make fpga_mac_direct_tradeoff_preview
+make fpga_mac_direct_shared_dsp_preview
+make fpga_mac_direct_shared_lut_8x4_preview
+make fpga_mac_direct_shared_dsp_8x4_preview
 make fpga_mac_direct_4x4
+make fpga_mac_direct_tradeoff_4x4
+make fpga_mac_direct_shared_dsp_4x4
+make fpga_mac_direct_shared_lut_8x4
+make fpga_mac_direct_shared_dsp_8x4
 python3 analysis/run_mac_array_direct_slice.py
 ```
 
 This path is explicitly separate from the CNN top and from the proxy-only refresh flow:
 
 - it is a direct MAC-array RTL slice,
-- it currently measures `baseline` only,
+- it now directly measures both baseline calibration points and shared bridge points at 4x4 and 8x4,
 - it feeds comparison artifacts into `results/fpga/framework_v2/direct_slice/`,
-- it does not claim direct shared/replicated/adaptive hardware support yet.
+- it does not claim direct replicated or adaptive hardware support yet.
 
-The checked-in direct baseline calibration set now covers `4x4`, `8x4`, and `8x8` for `K_DEPTH=32`:
+The checked-in direct baseline calibration set covers `4x4`, `8x4`, and `8x8` for `K_DEPTH=32`:
 
 - `4x4`: `16 DSP`, `1061 LUT`, `524 FF`, `WNS = +1.942 ns`, `33` cycles, `15.515 ops/cycle`
 - `8x4`: `32 DSP`, `2134 LUT`, `1036 FF`, `WNS = +2.019 ns`, `33` cycles, `31.030 ops/cycle`
 - `8x8`: `64 DSP`, `4287 LUT`, `2060 FF`, `WNS = +0.634 ns`, `33` cycles, `62.061 ops/cycle`
 
-The direct comparison pack now shows:
+The directly measured shared comparison set at `K_DEPTH=32` now spans two scales:
 
-- exact DSP agreement across all three measured baseline points,
-- exact direct-slice latency and throughput agreement across all three points,
-- lightweight framework LUT underprediction growing from `401` to `2187` LUT across the tested sizes,
-- a direct-slice-calibrated linear LUT aid in `results/fpga/framework_v2/direct_slice/` that is reported as a baseline-only caution aid rather than a silent framework replacement.
+`4x4`
+- baseline: `16 DSP`, `1061 LUT`, `524 FF`, `WNS = +1.942 ns`, `33` cycles, `15.515 ops/cycle`
+- shared_lut_saving: `16 DSP`, `679 LUT`, `525 FF`, `WNS = +1.199 ns`, `65` cycles, `7.877 ops/cycle`
+- shared_dsp_reducing: `0 DSP`, `910 LUT`, `589 FF`, `WNS = +2.261 ns`, `65` cycles, `7.877 ops/cycle`
 
-Useful direct-slice commands:
+`8x4`
+- baseline: `32 DSP`, `2134 LUT`, `1036 FF`, `WNS = +2.019 ns`, `33` cycles, `31.030 ops/cycle`
+- shared_lut_saving: `32 DSP`, `1351 LUT`, `1037 FF`, `WNS = +1.038 ns`, `65` cycles, `15.754 ops/cycle`
+- shared_dsp_reducing: `0 DSP`, `1817 LUT`, `1165 FF`, `WNS = +1.378 ns`, `65` cycles, `15.754 ops/cycle`
 
-```bash
-make fpga_mac_direct_4x4
-make fpga_mac_direct_8x4
-make fpga_mac_direct_8x8
-make fpga_mac_direct_report
-```
+Those results are intentionally reported honestly: `shared_lut_saving` buys the strongest LUT reduction at both measured scales but stays DSP-flat, while `shared_dsp_reducing` removes DSP usage at both measured scales with a weaker LUT win.
+
+The measured scaling rule is now explicit: the 4x4 three-way rule survives at 8x4. Use `shared_lut_saving` for LUT-only pressure, use `shared_dsp_reducing` for DSP pressure, and keep `baseline` when throughput, latency, or timing-margin demands dominate.
+
+The measured utility rule is now explicit too: these shared implementations are bottleneck-specific relief mechanisms, not generally better options. Their utility disappears when there is no hard resource bottleneck or when performance dominates, and timing-margin preference is even grid-dependent (`shared_dsp_reducing` at `4x4`, `baseline` at `8x4`).
+
+The measured design-rule conclusion is now explicit: flexibility introduces fixed overhead in latency and throughput, so it should be selected for bottleneck relief rather than for abstract architectural elegance. If no hard LUT or DSP bottleneck dominates, baseline remains preferable.
+
+Generated direct-slice artifacts land under `results/fpga/framework_v2/direct_slice/`, including:
+
+- `direct_measured_vs_modelled.csv/json`
+- `direct_calibration_summary.md/json`
+- `direct_tradeoff_measured_vs_modelled.csv/json`
+- `direct_tradeoff_summary.md`
+- `direct_shared_implementation_comparison.csv/json`
+- `direct_shared_implementation_summary.md/json`
+- `direct_shared_scaling_summary.md/json`
+- `measured_support_map.csv/json`
+- `framework_trust_overlay.csv/json`
+- `measured_vs_modelled_trust_summary.md/json`
+- `framework_calibration_aid.csv/json`
+- `framework_calibration_overlay.csv/json`
+- `shared_family_calibration_summary.md/json`
+- `measured_utility_table.csv/json`
+- `measured_bottleneck_choice_map.csv/json`
+- `measured_utility_summary.md/json`
+- `measured_flexibility_overhead_table.csv/json`
+- `measured_flexibility_justification_table.csv/json`
+- `measured_design_rule_extraction_summary.md/json`
+- `measured_tradeoff_decision_table.csv/json`
+- `measured_tradeoff_regime_summary.md`
+- `measured_design_rules.md`
 
 ### Selective measured refresh
 

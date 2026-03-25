@@ -60,6 +60,61 @@ def current_measured_summary() -> dict[str, Any]:
     baseline = _extract_single_run("study_baseline_characterization")
     dense_rows = _extract_dense_scaling_rows()
     best_dense = max(dense_rows, key=lambda row: row.get("throughput_inferences_per_sec") or 0.0)
+
+    direct_tradeoff_rows = []
+    direct_tradeoff_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "direct_tradeoff_measured_vs_modelled.json"
+    if direct_tradeoff_path.exists():
+        direct_tradeoff_rows = json.loads(direct_tradeoff_path.read_text())
+
+    direct_tradeoff_summary = None
+    if direct_tradeoff_rows:
+        direct_tradeoff_summary = direct_tradeoff_rows[0]
+
+    direct_shared_summary_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "direct_shared_implementation_summary.json"
+    direct_shared_summary = None
+    if direct_shared_summary_path.exists():
+        direct_shared_summary = json.loads(direct_shared_summary_path.read_text())
+
+    measured_support_map_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "measured_support_map.json"
+    measured_support_map = []
+    if measured_support_map_path.exists():
+        measured_support_map = json.loads(measured_support_map_path.read_text())
+
+    measured_trust_summary_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "measured_trust_summary.json"
+    measured_trust_summary = None
+    if measured_trust_summary_path.exists():
+        measured_trust_summary = json.loads(measured_trust_summary_path.read_text())
+
+    framework_calibration_aid_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "framework_calibration_aid.json"
+    framework_calibration_aid = []
+    if framework_calibration_aid_path.exists():
+        framework_calibration_aid = json.loads(framework_calibration_aid_path.read_text())
+
+    framework_calibration_overlay_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "framework_calibration_overlay.json"
+    framework_calibration_overlay = []
+    if framework_calibration_overlay_path.exists():
+        framework_calibration_overlay = json.loads(framework_calibration_overlay_path.read_text())
+
+    shared_family_calibration_summary_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "shared_family_calibration_summary.json"
+    shared_family_calibration_summary = None
+    if shared_family_calibration_summary_path.exists():
+        shared_family_calibration_summary = json.loads(shared_family_calibration_summary_path.read_text())
+
+    measured_utility_summary_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "measured_utility_summary.json"
+    measured_utility_summary = None
+    if measured_utility_summary_path.exists():
+        measured_utility_summary = json.loads(measured_utility_summary_path.read_text())
+
+    measured_bottleneck_choice_map_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "measured_bottleneck_choice_map.json"
+    measured_bottleneck_choice_map = []
+    if measured_bottleneck_choice_map_path.exists():
+        measured_bottleneck_choice_map = json.loads(measured_bottleneck_choice_map_path.read_text())
+
+    measured_design_rule_extraction_summary_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "measured_design_rule_extraction_summary.json"
+    measured_design_rule_extraction_summary = None
+    if measured_design_rule_extraction_summary_path.exists():
+        measured_design_rule_extraction_summary = json.loads(measured_design_rule_extraction_summary_path.read_text())
+
     return {
         "source_datasets": [
             "results/fpga/aggregates/study_baseline_characterization.json",
@@ -89,6 +144,47 @@ def current_measured_summary() -> dict[str, Any]:
                 }
                 for row in dense_rows
             ],
+        },
+        "direct_tradeoff": {
+            "source_path": str(direct_tradeoff_path.relative_to(REPO_ROOT)) if direct_tradeoff_path.exists() else None,
+            "measured_pairs": len(direct_tradeoff_rows),
+            "first_pair": direct_tradeoff_summary,
+        },
+        "direct_shared_summary": {
+            "source_path": str(direct_shared_summary_path.relative_to(REPO_ROOT)) if direct_shared_summary_path.exists() else None,
+            "summary": direct_shared_summary,
+        },
+        "measured_support_map": {
+            "source_path": str(measured_support_map_path.relative_to(REPO_ROOT)) if measured_support_map_path.exists() else None,
+            "rows": measured_support_map,
+        },
+        "measured_trust_summary": {
+            "source_path": str(measured_trust_summary_path.relative_to(REPO_ROOT)) if measured_trust_summary_path.exists() else None,
+            "summary": measured_trust_summary,
+        },
+        "framework_calibration_aid": {
+            "source_path": str(framework_calibration_aid_path.relative_to(REPO_ROOT)) if framework_calibration_aid_path.exists() else None,
+            "rows": framework_calibration_aid,
+        },
+        "framework_calibration_overlay": {
+            "source_path": str(framework_calibration_overlay_path.relative_to(REPO_ROOT)) if framework_calibration_overlay_path.exists() else None,
+            "rows": framework_calibration_overlay,
+        },
+        "shared_family_calibration_summary": {
+            "source_path": str(shared_family_calibration_summary_path.relative_to(REPO_ROOT)) if shared_family_calibration_summary_path.exists() else None,
+            "summary": shared_family_calibration_summary,
+        },
+        "measured_utility_summary": {
+            "source_path": str(measured_utility_summary_path.relative_to(REPO_ROOT)) if measured_utility_summary_path.exists() else None,
+            "summary": measured_utility_summary,
+        },
+        "measured_bottleneck_choice_map": {
+            "source_path": str(measured_bottleneck_choice_map_path.relative_to(REPO_ROOT)) if measured_bottleneck_choice_map_path.exists() else None,
+            "rows": measured_bottleneck_choice_map,
+        },
+        "measured_design_rule_extraction_summary": {
+            "source_path": str(measured_design_rule_extraction_summary_path.relative_to(REPO_ROOT)) if measured_design_rule_extraction_summary_path.exists() else None,
+            "summary": measured_design_rule_extraction_summary,
         },
     }
 
@@ -174,6 +270,8 @@ def render_markdown_report(
         "## Measured vs Modelled",
         "",
         "- Measured: current checked-in CNN baseline and dense-parallel sweep aggregates.",
+        "- Direct measured MAC slice: baseline calibration points plus directly measured 4x4 and 8x4 shared implementations when the direct slice artifacts are present.",
+        "- Framework shared rows refer to the modelled shared family `shared_modelled_dsp_reducing`; the direct shared slices are separate implementation-specific measured observations.",
         "- Anchored: prior MAC-array static facts explicitly carried in the evidence registry.",
         "- Modelled: workload classes, utilization-aware latency/throughput estimates, adaptive switching costs, break-even thresholds, and policy recommendations.",
         "",
@@ -184,12 +282,74 @@ def render_markdown_report(
     for row in provenance_rows:
         lines.append(f"- `{row['value_kind']}`: {row['count']} records from `{row['source_path']}`")
 
+    direct_tradeoff = measured_summary.get("direct_tradeoff", {})
+    direct_tradeoff_pair = direct_tradeoff.get("first_pair")
+    direct_tradeoff_note = None
+    direct_shared_summary_wrapper = measured_summary.get("direct_shared_summary", {})
+    direct_shared_summary = direct_shared_summary_wrapper.get("summary")
+    trust_summary_wrapper = measured_summary.get("measured_trust_summary", {})
+    trust_summary = trust_summary_wrapper.get("summary")
+    support_map_wrapper = measured_summary.get("measured_support_map", {})
+    support_map_rows = support_map_wrapper.get("rows") or []
+    calibration_summary_wrapper = measured_summary.get("shared_family_calibration_summary", {})
+    calibration_summary = calibration_summary_wrapper.get("summary")
+    calibration_overlay_wrapper = measured_summary.get("framework_calibration_overlay", {})
+    calibration_overlay_rows = calibration_overlay_wrapper.get("rows") or []
+    utility_summary_wrapper = measured_summary.get("measured_utility_summary", {})
+    utility_summary = utility_summary_wrapper.get("summary")
+    bottleneck_map_wrapper = measured_summary.get("measured_bottleneck_choice_map", {})
+    bottleneck_map_rows = bottleneck_map_wrapper.get("rows") or []
+    design_rule_summary_wrapper = measured_summary.get("measured_design_rule_extraction_summary", {})
+    design_rule_summary = design_rule_summary_wrapper.get("summary")
+    direct_shared_notes: list[str] = []
+    trust_notes: list[str] = []
+    calibration_notes: list[str] = []
+    utility_notes: list[str] = []
+    design_rule_notes: list[str] = []
+    if direct_tradeoff_pair:
+        direct_tradeoff_note = (
+            f"- Direct measured bridge now covers the isolated slice at 4x4 and 8x4, with each shared point anchored back to the measured baseline schedule and resource point for its grid."
+        )
+    if direct_shared_summary:
+        direct_shared_notes.append(f"- {direct_shared_summary['headline']}")
+        for line in direct_shared_summary.get('summary_lines', []):
+            direct_shared_notes.append(f"- {line}")
+    if trust_summary:
+        trust_notes.append(f"- {trust_summary['headline']}")
+        for line in trust_summary.get('summary_lines', []):
+            trust_notes.append(f"- {line}")
+    if calibration_summary:
+        calibration_notes.append(f"- {calibration_summary['headline']}")
+        for line in calibration_summary.get("summary_lines", []):
+            calibration_notes.append(f"- {line}")
+    if utility_summary:
+        utility_notes.append(f"- {utility_summary['headline']}")
+        for line in utility_summary.get("summary_lines", []):
+            utility_notes.append(f"- {line}")
+    if design_rule_summary:
+        design_rule_notes.append(f"- {design_rule_summary['headline']}")
+        for line in design_rule_summary.get("summary_lines", []):
+            design_rule_notes.append(f"- {line}")
+    for row in bottleneck_map_rows[:5]:
+        utility_notes.append(f"- `{row['grid']}` / `{row['bottleneck_kind']}` -> `{row['preferred_variant']}`: {row['decision_basis']}")
+    for row in calibration_overlay_rows[:4]:
+        calibration_notes.append(f"- `{row['overlay_topic']}` -> `{row['calibration_status']}`: {row['calibration_reading']}")
+    for row in support_map_rows[:4]:
+        trust_notes.append(f"- `{row['claim_id']}` -> `{row['support_level']}`: {row['trust_note']}")
+
     lines.extend(
         [
             "",
             "## Strongest Insights",
             "",
-            f"- Shared 8x8 halves DSP demand from `{baseline_8x8['dsp']}` to `{shared_8x8['dsp']}` while the workload model still keeps it competitive on underfilled and budget-limited cases.",
+            f"- The framework shared family currently means the modelled variant `{shared_8x8['architecture_variant_id']}`, not the directly measured 4x4 and 8x4 shared implementations.",
+            f"- Shared 8x8 keeps the anchored prior-study DSP reduction from `{baseline_8x8['dsp']}` to `{shared_8x8['dsp']}`, but that anchor now sits alongside measured 4x4 and 8x4 shared implementations that separate LUT-oriented sharing from DSP-oriented sharing on Artix-7.",
+            *([direct_tradeoff_note] if direct_tradeoff_note else []),
+            *direct_shared_notes,
+            *trust_notes,
+            *calibration_notes,
+            *utility_notes,
+            *design_rule_notes,
             f"- Replicated 8x8 remains excluded on Artix-7 because the framework preserves the `{replicated_8x8['implementation_status']}` evidence rather than treating the missing implementation as neutral.",
             f"- Adaptive mode switching wins in `{len(adaptive_wins)}` policy scenarios; under the tighter mode-pair-aware switching model it is currently a conservative option rather than a default recommendation.",
             f"- The bounded regime map covers `{regime_meta['regime_points']}` points; adaptive win region present: `{regime_meta['adaptive_has_win_region']}`.",
@@ -200,7 +360,7 @@ def render_markdown_report(
             "## Regime Result",
             "",
             f"- Bounded regime dimensions are `grid x workload x budget_class x throughput_class` = `{regime_meta['regime_points']}` points.",
-            "- `budget_class` comes from the evaluated architecture resource rows: `tight_shared_only`, `baseline_fit`, and `expanded_headroom`.",
+            "- `budget_class` comes from the evaluated architecture resource rows: `tight_shared_model_only`, `baseline_fit`, and `expanded_headroom`.",
             "- `throughput_class` comes from each workload/grid throughput envelope: `efficiency_oriented`, `balanced`, and `stretch`.",
             f"- Adaptive win region present: `{regime_meta['adaptive_has_win_region']}`.",
             "",
@@ -235,8 +395,19 @@ def render_markdown_report(
     )
 
     for row in strongest_policy:
+        recommendation_label = (
+            f"{row['recommendation']} (modelled family; read through calibration aid)"
+            if row["recommendation"] == "shared"
+            else row["recommendation"]
+        )
+        runner_up = row.get("runner_up", "")
+        runner_up_label = (
+            f"{runner_up} (modelled family; read through calibration aid)"
+            if runner_up == "shared"
+            else runner_up
+        )
         lines.append(
-            f"- `{row['constraint']}` / `{row['workload']}` / `{row['grid']}` -> `{row['recommendation']}` over `{row.get('runner_up', '')}`: {row['reason']}"
+            f"- `{row['constraint']}` / `{row['workload']}` / `{row['grid']}` -> `{recommendation_label}` over `{runner_up_label}`: {row['reason']}"
         )
 
     lines.extend(
@@ -261,11 +432,24 @@ def render_markdown_report(
             "- `adaptive_rejection_surface.csv/json`: dominant adaptive blocker by grid/workload slice.",
             "- `regime_insights.csv/json` and `regime_insights.md`: derived winner/blocker summaries from the generated regime map.",
             "- `measured_refresh/`: optional selective measured-refresh manifest, single-run queue configs, and proxy comparison outputs.",
+            "- `measured_support_map.csv/json`: machine-readable support levels for measured implementation roles and family-level shared claims.",
+            "- `framework_trust_overlay.csv/json`: compact trust overlay for reading framework shared conclusions against measured support limits.",
+            "- `measured_vs_modelled_trust_summary.md/json`: concise trust-boundary summary for what is directly supported, directionally supported, or extrapolated beyond measured support.",
+            "- `framework_calibration_aid.csv/json`: machine-readable calibration aid for reading family-level framework resource expectations through direct-slice evidence.",
+            "- `framework_calibration_overlay.csv/json`: compact calibration overlay marking where family-level numeric expectations are aligned, optimistic, or implementation-dependent.",
+            "- `shared_family_calibration_summary.md/json`: concise calibration summary for how measured slice evidence should bound shared-family numeric interpretation.",
+            "- `measured_utility_table.csv/json`: compact measured utility rows for baseline, shared_lut_saving, and shared_dsp_reducing at each measured grid.",
+            "- `measured_bottleneck_choice_map.csv/json`: bounded measured choice map for LUT, DSP, performance, timing-margin, and no-bottleneck cases.",
+            "- `measured_utility_summary.md/json`: concise measured design-utility summary for when shared relief is actually worth the performance cost.",
+            "- `measured_flexibility_overhead_table.csv/json`: measured overhead rows quantifying what flexibility costs each shared implementation against baseline.",
+            "- `measured_flexibility_justification_table.csv/json`: bounded measured table for when flexibility is justified and when baseline should be preferred.",
+            "- `measured_design_rule_extraction_summary.md/json`: thesis-style measured design-rule conclusion for when flexibility is justified versus when it is just overhead.",
+            "- `direct_slice/`: direct measured-vs-modelled baseline calibration outputs, direct shared scaling outputs, measured support map rows, measured trust summaries, and direct calibration aids.",
             "",
             "## Limitations",
             "",
             "- Adaptive results are analytical pre-built-mode estimates, not partial reconfiguration measurements.",
-            "- LUT and most WNS fields remain analytical trend estimates unless explicitly anchored.",
+            "- LUT and most WNS fields remain analytical trend estimates unless explicitly anchored or directly measured on the isolated direct slice.",
             "- This framework is intentionally lightweight and does not run Vivado synthesis or place-and-route.",
             "",
         ]
@@ -408,7 +592,7 @@ def render_plots(
         strategy_labels = ["B", "S", "R", "A"]
         workload_order = sorted({row["workload"] for row in regime_rows})
         grid_order = sorted({row["grid"] for row in regime_rows})
-        budget_order = ["tight_shared_only", "baseline_fit", "expanded_headroom"]
+        budget_order = ["tight_shared_model_only", "baseline_fit", "expanded_headroom"]
         throughput_order = ["efficiency_oriented", "balanced", "stretch"]
         cmap = plt.get_cmap("tab10", len(strategy_codes))
         fig, axes = plt.subplots(len(grid_order), len(workload_order), figsize=(12.5, 7.8), squeeze=False)

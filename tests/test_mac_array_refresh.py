@@ -25,7 +25,7 @@ class MeasuredRefreshTest(unittest.TestCase):
             {
                 "grid": "4x4",
                 "workload": "dense_steady",
-                "budget_class": "tight_shared_only",
+                "budget_class": "tight_shared_model_only",
                 "throughput_class": "balanced",
                 "winner": "shared",
                 "winner_reason": "shared win",

@@ -23,6 +23,7 @@ STATIC_FIELDS = (
     "latency_penalty_fraction",
     "fixed_phase_overhead_cycles",
     "implementation_status",
+    "note",
 )
 
 
@@ -104,7 +105,23 @@ def load_evidence(path: Path) -> EvidenceBundle:
         arch_meta[arch_name] = {
             "description": arch_payload["description"],
             "models": models,
+            "variant_id": arch_payload.get("variant_id", arch_name),
+            "variant_kind": arch_payload.get("variant_kind", "modelled_architecture_variant"),
+            "scope_note": arch_payload.get("scope_note", arch_payload["description"]),
         }
+        registry_rows.append(
+            {
+                "record_id": f"variant_{arch_meta[arch_name]['variant_id']}",
+                "architecture": arch_name,
+                "grid": "*",
+                "field": "variant_id",
+                "value": arch_meta[arch_name]["variant_id"],
+                "value_kind": arch_meta[arch_name]["variant_kind"],
+                "source_path": str(path.relative_to(REPO_ROOT)),
+                "source_desc": arch_meta[arch_name]["scope_note"],
+                "derivation": "architecture variant metadata",
+            }
+        )
 
         for field_name, field_model in models.items():
             registry_rows.append(
@@ -156,32 +173,54 @@ def load_evidence(path: Path) -> EvidenceBundle:
     )
 
 
-def static_field_provenance(
+def static_override_record(
     bundle: EvidenceBundle,
     architecture: str,
     grid: str,
     field: str,
-) -> FieldProvenance:
+) -> dict[str, Any] | None:
     for override in bundle.overrides:
         if (
             override["architecture"] == architecture
             and override["grid"] == grid
             and override["field"] == field
         ):
-            return FieldProvenance(
-                field=field,
-                value_kind=str(override["value_kind"]),
-                source_id=str(override["record_id"]),
-                source_path=str(override["source_path"]),
-                source_desc=str(override["source_desc"]),
-                derivation=str(override.get("derivation", "explicit override")),
-            )
+            return override
+    return None
+
+
+def static_field_provenance(
+    bundle: EvidenceBundle,
+    architecture: str,
+    grid: str,
+    field: str,
+) -> FieldProvenance:
+    override = static_override_record(bundle, architecture, grid, field)
+    if override is not None:
+        return FieldProvenance(
+            field=field,
+            value_kind=str(override["value_kind"]),
+            source_id=str(override["record_id"]),
+            source_path=str(override["source_path"]),
+            source_desc=str(override["source_desc"]),
+            derivation=str(override.get("derivation", "explicit override")),
+        )
 
     models = bundle.architecture_meta[architecture]["models"]
     if field in ("dsp", "lut", "wns_estimate_ns"):
         model = models[field]
     elif field in ("latency_penalty_fraction", "fixed_phase_overhead_cycles", "implementation_status"):
         model = models["execution"]
+    elif field == "note":
+        scope_note = bundle.architecture_meta[architecture].get("scope_note", "No explicit note")
+        return FieldProvenance(
+            field=field,
+            value_kind="modelled_architecture_variant",
+            source_id=f"variant_{bundle.architecture_meta[architecture].get('variant_id', architecture)}",
+            source_path=str(bundle.source_path.relative_to(REPO_ROOT)),
+            source_desc=str(scope_note),
+            derivation="architecture variant metadata",
+        )
     else:
         raise KeyError(f"Unsupported static field '{field}'")
 
@@ -201,14 +240,10 @@ def static_override_value(
     grid: str,
     field: str,
 ) -> Any | None:
-    for override in bundle.overrides:
-        if (
-            override["architecture"] == architecture
-            and override["grid"] == grid
-            and override["field"] == field
-        ):
-            return override["value"]
-    return None
+    override = static_override_record(bundle, architecture, grid, field)
+    if override is None:
+        return None
+    return override["value"]
 
 
 def switching_pair_record(bundle: EvidenceBundle, from_mode: str, to_mode: str) -> dict[str, Any]:

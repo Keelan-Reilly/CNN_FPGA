@@ -91,7 +91,11 @@ The `Makefile` is the main operator-facing entrypoint:
 - `make fpga_framework_v2`: generate the workload-aware MAC-array framework v2 results pack.
 - `make fpga_mac_direct_preview`: preview the directly measurable MAC-array baseline queue.
 - `make fpga_mac_direct_4x4`: run one scoped 4x4 direct MAC-array baseline point.
+- `make fpga_mac_direct_tradeoff_preview`: preview the smallest 4x4 baseline-vs-shared direct tradeoff queue.
+- `make fpga_mac_direct_tradeoff_4x4`: run the smallest directly measurable 4x4 baseline-vs-shared tradeoff.
 - `make fpga_mac_direct_8x4`: run one scoped 8x4 direct MAC-array baseline point.
+- `make fpga_mac_direct_shared_lut_8x4`: run the directly measurable 8x4 LUT-oriented shared point.
+- `make fpga_mac_direct_shared_dsp_8x4`: run the directly measurable 8x4 DSP-oriented shared point.
 - `make fpga_mac_direct_8x8`: run one scoped 8x8 direct MAC-array baseline point.
 - `make fpga_mac_direct_report`: generate direct measured-vs-modelled slice artifacts.
 - `make fpga_refresh_preview`: generate the selective measured-refresh manifest and preview only the runnable queue.
@@ -120,14 +124,14 @@ This file is the smallest standalone directly measurable MAC-array RTL slice in 
 
 It is intentionally narrow:
 
-- baseline spatial mapping only,
-- parameterized by `ARRAY_ROWS`, `ARRAY_COLS`, and `K_DEPTH`,
-- no shared/replicated/adaptive hardware modes yet,
+- baseline plus two small shared modes,
+- parameterized by `ARRAY_ROWS`, `ARRAY_COLS`, `K_DEPTH`, and `ARCH_MODE`,
+- still intentionally isolated from replicated/adaptive hardware modes,
 - designed to ride the existing Vivado batch flow and the newer evidence/report pipeline.
 
-Architecturally, it instantiates one MAC-style cell per grid position and runs a fixed synthetic workload so DSP/LUT/timing and direct cycle measurements can be collected without pulling in the full CNN datapath.
+Architecturally, baseline instantiates one MAC-style cell per grid position. `shared_lut_saving` time-multiplexes one DSP-backed multiplier across each adjacent column pair, while `shared_dsp_reducing` reuses the same schedule but forces the shared multiplier into LUT logic so the implementation target is explicit DSP relief. All three modes run the same fixed synthetic workload so DSP/LUT/FF/timing and direct cycle measurements can be collected without pulling in the full CNN datapath.
 
-The current checked-in direct baseline calibration set uses this top to measure `4x4`, `8x4`, and `8x8` baseline points at `K_DEPTH=32`. Those points now serve as the repo's first true MAC-array-specific calibration evidence for the lightweight framework model.
+The current checked-in direct baseline calibration set uses this top to measure `4x4`, `8x4`, and `8x8` baseline points at `K_DEPTH=32`. The same top now also carries a two-scale, three-way directly measured architecture bridge at `4x4` and `8x4`: baseline, `shared_lut_saving`, and `shared_dsp_reducing`. The framework keeps those measured shared implementations separate from the modelled shared family, so the direct slice does not silently redefine the broader `shared` architecture category. The corresponding measured design rules are implementation-specific and now survive the first scale step: `shared_lut_saving` remains the most LUT-efficient option, `shared_dsp_reducing` remains the measured path for actual DSP relief, and baseline remains the performance-first option. The same path now emits a measured support map, trust overlay, calibration aid, utility layer, and design-rule extraction summary so the repo can distinguish directly supported implementation roles from family-level extrapolations, bound how literally shared-family numeric projections should be read, state when measured shared relief is actually worth its performance cost, and state when flexibility is just overhead rather than justified relief.
 
 ### `hdl/top_level.sv`
 
@@ -706,7 +710,7 @@ These files define reproducible FPGA study runs.
 
 - workload-aware MAC-array framework config,
 - carries the canonical `4x4`, `8x4`, `8x8` grid set,
-- records measured static anchors such as the 8x8 shared `64 -> 32 DSP` reduction and the 8x8 replicated Artix-7 implementation failure,
+- records modelled architecture variants, anchored static facts such as the 8x8 shared `64 -> 32 DSP` reduction, and implementation-specific observations such as the measured 4x4 shared direct slice mismatch,
 - defines switching-cost assumptions, workload classes, and policy-evaluation constraint presets.
 
 There are effectively two tiers of configs:

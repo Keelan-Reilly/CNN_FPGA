@@ -40,6 +40,16 @@ class FrameworkLogicTest(unittest.TestCase):
         )
         self.assertEqual(summary.dsp, 32)
 
+    def test_shared_4x4_keeps_modelled_dsp_but_carries_direct_measurement_note(self) -> None:
+        grid = GridSpec(label="4x4", rows=4, cols=4)
+        row = derive_static_row(grid, self.architectures["shared"], self.evidence)
+        self.assertEqual(row["architecture_variant_id"], "shared_modelled_dsp_reducing")
+        self.assertEqual(row["dsp"], 8)
+        self.assertEqual(row["dsp_provenance_kind"], "architecture_semantics")
+        self.assertEqual(row["implementation_status_provenance_kind"], "direct_measured_implementation_fact")
+        self.assertEqual(row["note_provenance_kind"], "direct_measured_implementation_fact")
+        self.assertEqual(row["measurement_basis"], "mixed_direct_measured_and_modelled")
+
     def test_replicated_is_marked_timing_infeasible_on_8x8(self) -> None:
         summary, _ = summarize_workload(
             self.grid,

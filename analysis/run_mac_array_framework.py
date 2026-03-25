@@ -13,6 +13,26 @@ try:
     from .mac_array_evidence import load_evidence, provenance_summary_rows
     from .fpga_results import REPO_ROOT
     from .mac_array_adaptive import build_break_even_rows, evaluate_adaptive_workload
+    from .mac_array_direct_slice import (
+        build_direct_slice_comparison_rows,
+        build_direct_tradeoff_rows,
+        build_framework_calibration_aid_rows,
+        build_framework_calibration_overlay_rows,
+        build_framework_trust_overlay_rows,
+        build_measured_bottleneck_choice_map,
+        build_measured_design_rule_extraction_summary,
+        build_measured_flexibility_justification_table,
+        build_measured_flexibility_overhead_rows,
+        build_measured_support_rows,
+        build_measured_trust_summary,
+        build_measured_utility_rows,
+        build_measured_utility_summary,
+        build_shared_family_calibration_summary,
+        render_measured_vs_modelled_trust_summary,
+        render_measured_utility_summary,
+        render_shared_family_calibration_summary,
+        render_measured_design_rule_extraction_summary,
+    )
     from .mac_array_metrics import derive_static_row, summarize_workload
     from .mac_array_policy import evaluate_policy
     from .mac_array_regime import (
@@ -36,6 +56,26 @@ except ImportError:
     from mac_array_evidence import load_evidence, provenance_summary_rows
     from fpga_results import REPO_ROOT
     from mac_array_adaptive import build_break_even_rows, evaluate_adaptive_workload
+    from mac_array_direct_slice import (
+        build_direct_slice_comparison_rows,
+        build_direct_tradeoff_rows,
+        build_framework_calibration_aid_rows,
+        build_framework_calibration_overlay_rows,
+        build_framework_trust_overlay_rows,
+        build_measured_bottleneck_choice_map,
+        build_measured_design_rule_extraction_summary,
+        build_measured_flexibility_justification_table,
+        build_measured_flexibility_overhead_rows,
+        build_measured_support_rows,
+        build_measured_trust_summary,
+        build_measured_utility_rows,
+        build_measured_utility_summary,
+        build_shared_family_calibration_summary,
+        render_measured_vs_modelled_trust_summary,
+        render_measured_utility_summary,
+        render_shared_family_calibration_summary,
+        render_measured_design_rule_extraction_summary,
+    )
     from mac_array_metrics import derive_static_row, summarize_workload
     from mac_array_policy import evaluate_policy
     from mac_array_regime import (
@@ -163,6 +203,13 @@ def main() -> int:
                         "lut_source_id": static_row["lut_source_id"],
                         "wns_estimate_ns_provenance_kind": static_row["wns_estimate_ns_provenance_kind"],
                         "wns_estimate_ns_source_id": static_row["wns_estimate_ns_source_id"],
+                        "architecture_variant_id": static_row["architecture_variant_id"],
+                        "architecture_variant_kind": static_row["architecture_variant_kind"],
+                        "architecture_scope_note": static_row["architecture_scope_note"],
+                        "direct_measurement_alignment": static_row["direct_measurement_alignment"],
+                        "note": static_row["note"],
+                        "note_provenance_kind": static_row["note_provenance_kind"],
+                        "note_source_id": static_row["note_source_id"],
                     }
                 )
                 workload_rows.append(row)
@@ -240,6 +287,23 @@ def main() -> int:
                 policy_diagnostics.extend(diagnostics)
 
     measured_summary = current_measured_summary()
+    direct_rows = build_direct_slice_comparison_rows()
+    direct_tradeoff_rows = build_direct_tradeoff_rows(direct_rows)
+    support_rows = build_measured_support_rows(direct_tradeoff_rows)
+    trust_overlay_rows = build_framework_trust_overlay_rows(support_rows)
+    trust_summary = build_measured_trust_summary(support_rows)
+    calibration_rows = build_framework_calibration_aid_rows(direct_rows, direct_tradeoff_rows)
+    calibration_overlay_rows = build_framework_calibration_overlay_rows(calibration_rows)
+    calibration_summary = build_shared_family_calibration_summary(calibration_rows, calibration_overlay_rows)
+    utility_rows = build_measured_utility_rows(direct_tradeoff_rows)
+    bottleneck_rows = build_measured_bottleneck_choice_map(utility_rows, direct_tradeoff_rows)
+    utility_summary = build_measured_utility_summary(utility_rows, bottleneck_rows)
+    flexibility_overhead_rows = build_measured_flexibility_overhead_rows(direct_tradeoff_rows, utility_rows)
+    flexibility_justification_rows = build_measured_flexibility_justification_table(flexibility_overhead_rows, bottleneck_rows)
+    design_rule_extraction_summary = build_measured_design_rule_extraction_summary(
+        flexibility_overhead_rows,
+        flexibility_justification_rows,
+    )
     provenance_rows = provenance_summary_rows(evidence)
 
     def regime_adaptive_factory(grid_label: str, workload_name: str, constraint: ConstraintSpec) -> dict[str, Any] | None:
@@ -282,6 +346,26 @@ def main() -> int:
     write_json(output_dir / "provenance_summary.json", provenance_rows)
     write_csv(output_dir / "provenance_summary.csv", provenance_rows)
     write_json(output_dir / "legacy_measured_summary.json", measured_summary)
+    write_csv(output_dir / "measured_support_map.csv", support_rows)
+    write_json(output_dir / "measured_support_map.json", support_rows)
+    write_csv(output_dir / "framework_trust_overlay.csv", trust_overlay_rows)
+    write_json(output_dir / "framework_trust_overlay.json", trust_overlay_rows)
+    write_json(output_dir / "measured_trust_summary.json", trust_summary)
+    write_csv(output_dir / "framework_calibration_aid.csv", calibration_rows)
+    write_json(output_dir / "framework_calibration_aid.json", calibration_rows)
+    write_csv(output_dir / "framework_calibration_overlay.csv", calibration_overlay_rows)
+    write_json(output_dir / "framework_calibration_overlay.json", calibration_overlay_rows)
+    write_json(output_dir / "shared_family_calibration_summary.json", calibration_summary)
+    write_csv(output_dir / "measured_utility_table.csv", utility_rows)
+    write_json(output_dir / "measured_utility_table.json", utility_rows)
+    write_csv(output_dir / "measured_bottleneck_choice_map.csv", bottleneck_rows)
+    write_json(output_dir / "measured_bottleneck_choice_map.json", bottleneck_rows)
+    write_json(output_dir / "measured_utility_summary.json", utility_summary)
+    write_csv(output_dir / "measured_flexibility_overhead_table.csv", flexibility_overhead_rows)
+    write_json(output_dir / "measured_flexibility_overhead_table.json", flexibility_overhead_rows)
+    write_csv(output_dir / "measured_flexibility_justification_table.csv", flexibility_justification_rows)
+    write_json(output_dir / "measured_flexibility_justification_table.json", flexibility_justification_rows)
+    write_json(output_dir / "measured_design_rule_extraction_summary.json", design_rule_extraction_summary)
     write_csv(output_dir / "workload_manifest.csv", workload_manifest_rows)
     write_json(output_dir / "workload_manifest.json", workload_manifest_rows)
     write_csv(output_dir / "static_architectures.csv", static_rows)
@@ -330,6 +414,21 @@ def main() -> int:
         regime_rejection_rows=regime_rejection_rows,
         rejection_surface_rows=rejection_surface_rows,
         regime_insight_rows=regime_insight_rows,
+    )
+    render_shared_family_calibration_summary(
+        output_path=output_dir / "shared_family_calibration_summary.md",
+        summary=calibration_summary,
+        overlay_rows=calibration_overlay_rows,
+    )
+    render_measured_utility_summary(
+        output_path=output_dir / "measured_utility_summary.md",
+        summary=utility_summary,
+        bottleneck_rows=bottleneck_rows,
+    )
+    render_measured_design_rule_extraction_summary(
+        output_path=output_dir / "measured_design_rule_extraction_summary.md",
+        summary=design_rule_extraction_summary,
+        justification_rows=flexibility_justification_rows,
     )
     render_regime_insights_markdown(
         output_path=output_dir / "regime_insights.md",

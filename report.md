@@ -219,16 +219,23 @@ What remains modelled rather than measured:
 
 The checked-in `results/fpga/framework_v2/framework_report.md` captures the strongest current v2 conclusions. In the current pack:
 
-- `shared` wins when the budget is tight and the 8x8 `64 -> 32 DSP` anchor matters most,
+- the framework's `shared` wins now refer to the modelled shared family, whose 8x8 resource story still leans on the prior `64 -> 32 DSP` anchor rather than on the directly measured 4x4 and 8x4 shared implementations,
 - `baseline` wins when throughput/latency targets dominate and the larger fixed mode is still feasible,
 - `replicated` is only recommended in a narrow high-demand 4x4 phase-changing window,
 - adaptive candidates are now evaluated under the same DSP/LUT/timing constraints as fixed modes, which makes the current framework more conservative about recommending switching,
 - the bounded regime map currently finds no adaptive win region under the current evidence-backed assumptions,
 - the new regime presentation layer makes that no-win result explicit by showing adaptive rejection surfaces dominated by `adaptive_gain_too_small`,
-- the selective measured-refresh path currently offers proxy-only checks against the checked-in CNN studies, not direct MAC-array RTL validation,
 - the selective measured-refresh path still exists for broader regime sampling, but the repo now also has a three-point direct baseline calibration set: measured `4x4`, `8x4`, and `8x8` standalone baseline slices with exact DSP and direct-slice latency/throughput agreement against the simple model,
-- those same direct points show the lightweight baseline LUT estimate underpredicting by `401 .. 2187` LUT over the tested sizes, so the repo now reports a direct-slice-calibrated LUT aid as a baseline-only caution reference rather than silently replacing the global model,
-- 8x8 replicated remains excluded on Artix-7 because the framework preserves that implementation failure as evidence.
+- the repo now also has a two-scale, three-way directly measured architecture bridge on the isolated direct slice: `4x4` and `8x4`, each measured for baseline, `shared_lut_saving`, and `shared_dsp_reducing`,
+- at `4x4`, `shared_lut_saving` reduces LUT from `1061` to `679` while staying DSP-flat at `16`, and `shared_dsp_reducing` reduces DSP from `16` to `0` while landing at `910 LUT`,
+- at `8x4`, `shared_lut_saving` reduces LUT from `2134` to `1351` while staying DSP-flat at `32`, and `shared_dsp_reducing` reduces DSP from `32` to `0` while landing at `1817 LUT`,
+- those direct points now support a stronger measured decision layer under `results/fpga/framework_v2/direct_slice/`: a baseline-only LUT calibration aid, a direct shared-implementation comparison, a direct shared scaling summary, an explicit decision table, measured design rules, and a measured trust boundary for what is directly supported versus extrapolated,
+- 8x8 replicated remains excluded on Artix-7 because the framework preserves that implementation failure as evidence,
+- the measured scaling rule is now explicit: the 4x4 three-way role split survives at 8x4, so `shared_lut_saving` remains the LUT-relief option, `shared_dsp_reducing` remains the DSP-relief option, and `baseline` remains the performance-first option across the first measured scale step,
+- the new trust overlay now marks which of those conclusions are directly supported by measured implementation evidence, which are only directionally or partially supported at the family level, and which still remain anchored/modelled extrapolations such as 8x8 shared DSP reduction.
+- the framework now also carries a measured calibration aid and caution band: baseline LUT is numerically optimistic in the lightweight model, shared-family latency/throughput direction is well aligned with measured direct-slice behavior, and shared-family DSP/LUT projections remain implementation-dependent rather than silently treated as direct measured replacements.
+- the repo now also carries a measured utility layer: `shared_lut_saving` is only worthwhile when LUT pressure is the real bottleneck, `shared_dsp_reducing` is only worthwhile when DSP pressure is the real bottleneck, and both lose their utility when performance matters more than the relieved resource.
+- the repo now also carries a measured design-rule extraction layer: flexibility introduces fixed latency/throughput overhead, so it is justified only when the relieved bottleneck dominates that cost; otherwise baseline remains preferable.
 
 ## 11. Reproducibility
 
@@ -248,6 +255,10 @@ python3 analysis/run_mac_array_framework.py --config experiments/configs/mac_arr
 python3 experiments/run_fpga_experiments.py --config experiments/configs/study_mac_array_direct_baseline_4x4.json --fail-fast
 python3 experiments/run_fpga_experiments.py --config experiments/configs/study_mac_array_direct_baseline_8x4.json --fail-fast
 python3 experiments/run_fpga_experiments.py --config experiments/configs/study_mac_array_direct_baseline_8x8.json --fail-fast
+python3 experiments/run_fpga_experiments.py --config experiments/configs/study_mac_array_direct_tradeoff_4x4.json --fail-fast
+python3 experiments/run_fpga_experiments.py --config experiments/configs/study_mac_array_direct_shared_dsp_4x4.json --fail-fast
+python3 experiments/run_fpga_experiments.py --config experiments/configs/study_mac_array_direct_shared_lut_8x4.json --fail-fast
+python3 experiments/run_fpga_experiments.py --config experiments/configs/study_mac_array_direct_shared_dsp_8x4.json --fail-fast
 python3 analysis/run_mac_array_direct_slice.py
 python3 experiments/run_measured_refresh.py --preview-scheduler --scheduler resource-aware --max-concurrent-jobs 2 --cpu-threshold-pct 85 --min-free-mem-gb 4 --per-job-mem-gb 8 --vivado-jobs-override 2
 ```
@@ -260,6 +271,8 @@ The main datasets used in this report are:
 - `results/fpga/aggregates/study_precision_resource.csv`
 - `results/fpga/aggregates/study_timing_target.csv`
 - `results/fpga/framework_v2/framework_report.md`
+- `results/fpga/framework_v2/shared_family_calibration_summary.md`
 - `results/fpga/framework_v2/regime_insights.md`
 - `results/fpga/framework_v2/direct_slice/direct_calibration_summary.md`
+- `results/fpga/framework_v2/direct_slice/direct_tradeoff_summary.md`
 - `results/fpga/framework_v2/measured_refresh/comparison_summary.md`

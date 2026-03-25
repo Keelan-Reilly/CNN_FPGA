@@ -48,7 +48,8 @@ def derive_static_row(
     default_lut = arch.lut_for_grid(grid)
     default_wns = arch.wns_estimate_for_grid(grid)
     default_impl_status = arch.default_implementation_status
-    note = static_override_value(evidence, arch.name, grid.label, "note") or ""
+    arch_meta = evidence.architecture_meta[arch.name]
+    note = static_override_value(evidence, arch.name, grid.label, "note") or arch_meta.get("scope_note", "")
 
     dsp = static_override_value(evidence, arch.name, grid.label, "dsp")
     lut = static_override_value(evidence, arch.name, grid.label, "lut")
@@ -61,6 +62,7 @@ def derive_static_row(
     latency_penalty_prov = static_field_provenance(evidence, arch.name, grid.label, "latency_penalty_fraction")
     fixed_overhead_prov = static_field_provenance(evidence, arch.name, grid.label, "fixed_phase_overhead_cycles")
     impl_prov = static_field_provenance(evidence, arch.name, grid.label, "implementation_status")
+    note_prov = static_field_provenance(evidence, arch.name, grid.label, "note")
 
     kinds = {
         dsp_prov.value_kind,
@@ -69,20 +71,30 @@ def derive_static_row(
         latency_penalty_prov.value_kind,
         fixed_overhead_prov.value_kind,
         impl_prov.value_kind,
+        note_prov.value_kind,
     }
     measurement_basis = "modelled"
-    if any(kind.startswith("anchored") for kind in kinds):
+    if any(kind.startswith("direct_measured") for kind in kinds):
+        measurement_basis = "mixed_direct_measured_and_modelled"
+    elif any(kind.startswith("anchored") for kind in kinds):
         measurement_basis = "mixed_anchored_and_modelled"
 
     row = {
         "grid": grid.label,
         "architecture": arch.name,
+        "architecture_variant_id": arch_meta.get("variant_id", arch.name),
+        "architecture_variant_kind": arch_meta.get("variant_kind", "modelled_architecture_variant"),
+        "architecture_scope_note": arch_meta.get("scope_note", ""),
         "rows": grid.rows,
         "cols": grid.cols,
         "mac_units": grid.mac_units,
         "measurement_basis": measurement_basis,
         "record_provenance_summary": "; ".join(sorted(kinds)),
-        "note": note,
+        "direct_measurement_alignment": (
+            "implementation_specific_direct_measurement_available"
+            if note_prov.value_kind.startswith("direct_measured")
+            else "no_direct_implementation_specific_measurement"
+        ),
     }
     row.update(
         _flatten_provenance(
@@ -137,6 +149,17 @@ def derive_static_row(
             fixed_overhead_prov.source_path,
             fixed_overhead_prov.source_desc,
             fixed_overhead_prov.derivation,
+        )
+    )
+    row.update(
+        _flatten_provenance(
+            "note",
+            note,
+            note_prov.value_kind,
+            note_prov.source_id,
+            note_prov.source_path,
+            note_prov.source_desc,
+            note_prov.derivation,
         )
     )
     row.update(

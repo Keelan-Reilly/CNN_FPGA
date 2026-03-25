@@ -34,6 +34,7 @@ SUPPORTED_SWEEP_PARAMS = {
     "ARRAY_ROWS",
     "ARRAY_COLS",
     "K_DEPTH",
+    "ARCH_MODE",
 }
 
 

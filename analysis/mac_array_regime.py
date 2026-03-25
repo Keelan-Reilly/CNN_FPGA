@@ -31,22 +31,31 @@ def _budget_variants(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     replicated = by_arch["replicated"]
     return [
         {
-            "budget_class": "tight_shared_only",
+            "budget_class": "tight_shared_model_only",
             "dsp_budget": shared["dsp"],
             "lut_budget": shared["lut"],
             "budget_tightness": "tight",
+            "budget_basis_variant_id": shared.get("architecture_variant_id", "shared"),
+            "budget_basis_scope_note": shared.get("architecture_scope_note", ""),
+            "budget_basis_note": shared.get("note", ""),
         },
         {
             "budget_class": "baseline_fit",
             "dsp_budget": baseline["dsp"],
             "lut_budget": baseline["lut"],
             "budget_tightness": "moderate",
+            "budget_basis_variant_id": baseline.get("architecture_variant_id", "baseline"),
+            "budget_basis_scope_note": baseline.get("architecture_scope_note", ""),
+            "budget_basis_note": baseline.get("note", ""),
         },
         {
             "budget_class": "expanded_headroom",
             "dsp_budget": max(shared["dsp"], baseline["dsp"], replicated["dsp"]),
             "lut_budget": max(shared["lut"], baseline["lut"], replicated["lut"]),
             "budget_tightness": "relaxed",
+            "budget_basis_variant_id": "mixed_architecture_headroom",
+            "budget_basis_scope_note": "Expanded headroom uses the maximum of the modelled fixed-mode rows.",
+            "budget_basis_note": "",
         },
     ]
 
@@ -103,6 +112,9 @@ def build_regime_map(
                         "burstiness": sample["burstiness"],
                         "budget_class": budget["budget_class"],
                         "budget_tightness": budget["budget_tightness"],
+                        "budget_basis_variant_id": budget.get("budget_basis_variant_id", ""),
+                        "budget_basis_scope_note": budget.get("budget_basis_scope_note", ""),
+                        "budget_basis_note": budget.get("budget_basis_note", ""),
                         "dsp_budget": budget["dsp_budget"],
                         "lut_budget": budget["lut_budget"],
                         "throughput_class": target["throughput_class"],

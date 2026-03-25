@@ -7,21 +7,29 @@
         "dsp": {
           "record_id": "model_baseline_dsp_scale_v1",
           "formula": "dsp = ceil(mac_units * dsp_scale)",
-          "parameters": {"dsp_scale": 1.0},
+          "parameters": {
+            "dsp_scale": 1.0
+          },
           "value_kind": "architecture_semantics",
           "source_desc": "Baseline spatial mapping uses one DSP-equivalent per MAC position."
         },
         "lut": {
           "record_id": "model_baseline_lut_linear_v1",
           "formula": "lut = lut_fixed + lut_per_mac * mac_units",
-          "parameters": {"lut_fixed": 180.0, "lut_per_mac": 30.0},
+          "parameters": {
+            "lut_fixed": 180.0,
+            "lut_per_mac": 30.0
+          },
           "value_kind": "analytical_linear_model",
           "source_desc": "Lightweight linear LUT envelope used to compare architectures on a common normalized basis."
         },
         "wns_estimate_ns": {
           "record_id": "model_baseline_wns_linear_v1",
           "formula": "wns = wns_bias_ns - wns_per_effective_mac * mac_units * capacity_scale",
-          "parameters": {"wns_bias_ns": 1.0, "wns_per_effective_mac": 0.012},
+          "parameters": {
+            "wns_bias_ns": 1.0,
+            "wns_per_effective_mac": 0.012
+          },
           "value_kind": "analytical_linear_model",
           "source_desc": "Simple timing-risk trend model used only when no measured timing anchor exists."
         },
@@ -37,7 +45,10 @@
           "value_kind": "architecture_semantics",
           "source_desc": "Baseline has no sharing penalty and serves as the reference execution model."
         }
-      }
+      },
+      "variant_id": "baseline_modelled_spatial",
+      "variant_kind": "modelled_architecture_variant",
+      "scope_note": "Framework baseline rows refer to the modelled one-MAC-per-position baseline family. Direct baseline slice measurements calibrate this family more strongly than the other architecture families."
     },
     "shared": {
       "description": "Time-multiplexed compute that reduces DSP demand at the cost of control/latency overhead.",
@@ -45,21 +56,29 @@
         "dsp": {
           "record_id": "model_shared_dsp_scale_v1",
           "formula": "dsp = ceil(mac_units * dsp_scale)",
-          "parameters": {"dsp_scale": 0.5},
+          "parameters": {
+            "dsp_scale": 0.5
+          },
           "value_kind": "architecture_semantics",
           "source_desc": "Shared mode assumes two logical MAC positions are time-multiplexed onto one DSP-equivalent resource."
         },
         "lut": {
           "record_id": "model_shared_lut_linear_v1",
           "formula": "lut = lut_fixed + lut_per_mac * mac_units",
-          "parameters": {"lut_fixed": 220.0, "lut_per_mac": 18.0},
+          "parameters": {
+            "lut_fixed": 220.0,
+            "lut_per_mac": 18.0
+          },
           "value_kind": "analytical_linear_model",
           "source_desc": "Shared control overhead raises the fixed term while reducing per-MAC datapath LUT cost."
         },
         "wns_estimate_ns": {
           "record_id": "model_shared_wns_linear_v1",
           "formula": "wns = wns_bias_ns - wns_per_effective_mac * mac_units * capacity_scale",
-          "parameters": {"wns_bias_ns": 0.9, "wns_per_effective_mac": 0.012},
+          "parameters": {
+            "wns_bias_ns": 0.9,
+            "wns_per_effective_mac": 0.012
+          },
           "value_kind": "analytical_linear_model",
           "source_desc": "Shared mode timing estimate follows the same simple trend model with a slightly lower bias."
         },
@@ -75,7 +94,10 @@
           "value_kind": "analytical_execution_model",
           "source_desc": "Shared mode keeps nominal spatial capacity but adds replay/control overhead that inflates phase latency."
         }
-      }
+      },
+      "variant_id": "shared_modelled_dsp_reducing",
+      "variant_kind": "modelled_architecture_variant",
+      "scope_note": "Framework shared rows refer to a modelled DSP-reducing shared family. The directly measured 4x4 shared direct slice is a separate implementation-specific observation and does not validate global DSP reduction."
     },
     "replicated": {
       "description": "Duplicated compute intended to preserve throughput at higher resource cost.",
@@ -83,21 +105,29 @@
         "dsp": {
           "record_id": "model_replicated_dsp_scale_v1",
           "formula": "dsp = ceil(mac_units * dsp_scale)",
-          "parameters": {"dsp_scale": 2.0},
+          "parameters": {
+            "dsp_scale": 2.0
+          },
           "value_kind": "architecture_semantics",
           "source_desc": "Replicated mode duplicates compute lanes, doubling DSP-equivalent demand relative to baseline."
         },
         "lut": {
           "record_id": "model_replicated_lut_linear_v1",
           "formula": "lut = lut_fixed + lut_per_mac * mac_units",
-          "parameters": {"lut_fixed": 260.0, "lut_per_mac": 44.0},
+          "parameters": {
+            "lut_fixed": 260.0,
+            "lut_per_mac": 44.0
+          },
           "value_kind": "analytical_linear_model",
           "source_desc": "Replicated mode carries a larger fixed and per-MAC control/data-path cost envelope."
         },
         "wns_estimate_ns": {
           "record_id": "model_replicated_wns_linear_v1",
           "formula": "wns = wns_bias_ns - wns_per_effective_mac * mac_units * capacity_scale",
-          "parameters": {"wns_bias_ns": 0.7, "wns_per_effective_mac": 0.012},
+          "parameters": {
+            "wns_bias_ns": 0.7,
+            "wns_per_effective_mac": 0.012
+          },
           "value_kind": "analytical_linear_model",
           "source_desc": "Replicated mode is assigned the weakest timing bias because routing pressure grows with duplicated compute."
         },
@@ -113,7 +143,10 @@
           "value_kind": "analytical_execution_model",
           "source_desc": "Replicated mode doubles effective capacity while keeping only a small coordination overhead."
         }
-      }
+      },
+      "variant_id": "replicated_modelled_capacity_expanding",
+      "variant_kind": "modelled_architecture_variant",
+      "scope_note": "Framework replicated rows refer to the modelled duplicated-compute family and remain analytical except where anchored failure evidence is present."
     }
   },
   "field_overrides": [
@@ -166,6 +199,26 @@
       "value_kind": "anchored_prior_study_fact",
       "source_desc": "Negative timing anchor used to preserve 8x8 replicated timing failure evidence.",
       "derivation": "anchored timing indicator carried forward from earlier static architecture study"
+    },
+    {
+      "record_id": "measured_4x4_shared_impl_status_v1",
+      "grid": "4x4",
+      "architecture": "shared",
+      "field": "implementation_status",
+      "value": "implementation_measured_direct_slice_dsp_flat",
+      "value_kind": "direct_measured_implementation_fact",
+      "source_desc": "Direct 4x4 shared slice measurement on Artix-7 exists and is implementation-specific.",
+      "derivation": "summarized from direct 4x4 baseline-vs-shared measured tradeoff artifact"
+    },
+    {
+      "record_id": "measured_4x4_shared_note_v1",
+      "grid": "4x4",
+      "architecture": "shared",
+      "field": "note",
+      "value": "Direct 4x4 shared slice measurement is implementation-specific: DSP stays at 16 like baseline, LUT drops to 679, and latency increases from 33 to 65 cycles.",
+      "value_kind": "direct_measured_implementation_fact",
+      "source_desc": "Direct 4x4 shared slice tradeoff measured through Vivado and Verilator.",
+      "derivation": "summarized from results/fpga/framework_v2/direct_slice/direct_tradeoff_measured_vs_modelled.json"
     }
   ],
   "switching": {
