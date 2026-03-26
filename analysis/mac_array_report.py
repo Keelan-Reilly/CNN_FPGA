@@ -135,6 +135,11 @@ def current_measured_summary() -> dict[str, Any]:
     if measured_supported_region_map_path.exists():
         measured_supported_region_map = json.loads(measured_supported_region_map_path.read_text())
 
+    final_results_summary_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "final_results_summary.json"
+    final_results_summary = None
+    if final_results_summary_path.exists():
+        final_results_summary = json.loads(final_results_summary_path.read_text())
+
     return {
         "source_datasets": [
             "results/fpga/aggregates/study_baseline_characterization.json",
@@ -221,6 +226,10 @@ def current_measured_summary() -> dict[str, Any]:
         "measured_supported_region_map": {
             "source_path": str(measured_supported_region_map_path.relative_to(REPO_ROOT)) if measured_supported_region_map_path.exists() else None,
             "summary": measured_supported_region_map,
+        },
+        "final_results_summary": {
+            "source_path": str(final_results_summary_path.relative_to(REPO_ROOT)) if final_results_summary_path.exists() else None,
+            "summary": final_results_summary,
         },
     }
 
@@ -345,6 +354,8 @@ def render_markdown_report(
     regime_transfer_summary = regime_transfer_summary_wrapper.get("summary")
     supported_region_map_wrapper = measured_summary.get("measured_supported_region_map", {})
     supported_region_map = supported_region_map_wrapper.get("summary")
+    final_results_summary_wrapper = measured_summary.get("final_results_summary", {})
+    final_results_summary = final_results_summary_wrapper.get("summary")
     direct_shared_notes: list[str] = []
     trust_notes: list[str] = []
     calibration_notes: list[str] = []
@@ -352,6 +363,7 @@ def render_markdown_report(
     design_rule_notes: list[str] = []
     predictor_notes: list[str] = []
     decision_surface_notes: list[str] = []
+    final_results_notes: list[str] = []
     if direct_tradeoff_pair:
         direct_tradeoff_note = (
             f"- Direct measured bridge now covers the isolated slice at the currently measured shared grids, with each shared point anchored back to the measured baseline schedule and resource point for its grid."
@@ -392,6 +404,10 @@ def render_markdown_report(
         decision_surface_notes.append(f"- {supported_region_map['headline']}")
         for line in supported_region_map.get("summary_lines", []):
             decision_surface_notes.append(f"- {line}")
+    if final_results_summary:
+        final_results_notes.append(f"- {final_results_summary['headline']}")
+        for line in final_results_summary.get("summary_lines", []):
+            final_results_notes.append(f"- {line}")
     for row in bottleneck_map_rows[:5]:
         utility_notes.append(f"- `{row['grid']}` / `{row['bottleneck_kind']}` -> `{row['preferred_variant']}`: {row['decision_basis']}")
     for row in calibration_overlay_rows[:4]:
@@ -414,6 +430,7 @@ def render_markdown_report(
             *design_rule_notes,
             *predictor_notes,
             *decision_surface_notes,
+            *final_results_notes,
             f"- Replicated 8x8 remains excluded on Artix-7 because the framework preserves the `{replicated_8x8['implementation_status']}` evidence rather than treating the missing implementation as neutral.",
             f"- Adaptive mode switching wins in `{len(adaptive_wins)}` policy scenarios; under the tighter mode-pair-aware switching model it is currently a conservative option rather than a default recommendation.",
             f"- The bounded regime map covers `{regime_meta['regime_points']}` points; adaptive win region present: `{regime_meta['adaptive_has_win_region']}`.",
@@ -516,6 +533,15 @@ def render_markdown_report(
             "- `measured_budget_boundary_table.csv/json`: compact LUT/DSP/performance boundary rows showing where shared relief becomes worth its overhead inside the measured domain.",
             "- `measured_regime_transfer_summary.md/json`: concise summary of how the measured architecture-choice boundaries move across the validated direct-slice domain.",
             "- `measured_supported_region_map.md/json`: explicit supported-region map marking interpolation-backed choice regions and where the repo refuses extrapolated claims.",
+            "- `final_tradeoff_figures/`: thesis-ready architecture tradeoff figures for LUT, DSP, throughput, latency, and caution-only WNS across the measured direct-slice lattice.",
+            "- `final_predictor_validation_figures/`: thesis-ready measured-vs-fitted and residual figures for the local direct-slice predictor.",
+            "- `final_decision_surface_figures/`: thesis-ready supported-region and boundary figures for LUT pressure, DSP pressure, and explicitly unsupported timing-sensitive interpolation.",
+            "- `final_design_rule_table.csv/json/md`: compact final measured design rules for what each architecture buys, costs, and when it is justified.",
+            "- `final_trust_calibration_table.csv/json/md`: compact final table of trust, calibration, and predictor boundaries for reading the direct-slice results safely.",
+            "- `final_architecture_choice_boundary_table.csv/json/md`: compact final table of predictor-backed architecture-choice boundaries over the validated direct-slice domain.",
+            "- `final_artifact_index.csv/json/md`: compact artifact-by-artifact index listing filename, purpose, measured/interpolated/unsupported status, and thesis-use note.",
+            "- `final_results_summary.md/json` and `final_results_pack_manifest.json`: concise thesis-style summary plus a manifest of the final direct-slice results-pack figures and tables.",
+            "- `final_reproducibility_guide.md/json`: compact reproducibility guide for regenerating the final direct-slice family results pack and defending its validated domain boundary.",
             "- `direct_slice/`: direct measured-vs-modelled baseline calibration outputs, direct shared scaling outputs, measured support map rows, measured trust summaries, and direct calibration aids.",
             "",
             "## Limitations",

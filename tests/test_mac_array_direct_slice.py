@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -16,6 +17,12 @@ from analysis.mac_array_direct_slice import (
     build_direct_shared_implementation_summary,
     build_direct_shared_scaling_summary,
     build_direct_slice_comparison_rows,
+    build_final_architecture_choice_boundary_table,
+    build_final_artifact_index,
+    build_final_design_rule_table,
+    build_final_reproducibility_guide,
+    build_final_results_summary,
+    build_final_trust_calibration_table,
     build_framework_calibration_aid_rows,
     build_framework_calibration_overlay_rows,
     build_framework_trust_overlay_rows,
@@ -775,6 +782,92 @@ class DirectMacSliceTest(unittest.TestCase):
         self.assertIn("Baseline remains dominant whenever the design is performance-first", joined)
         self.assertIn("Timing-sensitive transfer is intentionally excluded", joined)
         self.assertIn("refuse to claim a predictor-backed architecture choice", joined)
+
+    def test_final_results_tables_and_summary_capture_thesis_grade_boundary(self) -> None:
+        direct_rows = self._two_scale_input_rows()
+        actual_rows = self._three_scale_actual_input_rows()
+        tradeoff_rows = build_direct_tradeoff_rows(direct_rows)
+        scaling_summary = build_direct_shared_scaling_summary(tradeoff_rows)
+        utility_rows = build_measured_utility_rows(tradeoff_rows)
+        bottleneck_rows = build_measured_bottleneck_choice_map(utility_rows, tradeoff_rows)
+        flexibility_rows = build_measured_flexibility_overhead_rows(tradeoff_rows, utility_rows)
+        flexibility_justification_rows = build_measured_flexibility_justification_table(flexibility_rows, bottleneck_rows)
+        predictor_rows = build_measured_predictor_rows(actual_rows)
+        boundary_summary = build_measured_extrapolation_boundary_summary(predictor_rows)
+        decision_rows = build_measured_decision_surface(predictor_rows, utility_rows, bottleneck_rows)
+        boundary_rows = build_measured_budget_boundary_rows(predictor_rows)
+        regime_transfer_summary = build_measured_regime_transfer_summary(decision_rows, boundary_rows, predictor_rows)
+        support_rows = build_measured_support_rows(tradeoff_rows)
+        calibration_rows = build_framework_calibration_aid_rows(direct_rows, tradeoff_rows)
+        calibration_overlay_rows = build_framework_calibration_overlay_rows(calibration_rows)
+
+        design_rule_rows = build_final_design_rule_table(tradeoff_rows, flexibility_justification_rows, scaling_summary)
+        trust_rows = build_final_trust_calibration_table(
+            support_rows,
+            calibration_overlay_rows,
+            predictor_rows,
+            boundary_summary,
+        )
+        choice_boundary_rows = build_final_architecture_choice_boundary_table(boundary_rows, regime_transfer_summary)
+        summary = build_final_results_summary(design_rule_rows, trust_rows, choice_boundary_rows, regime_transfer_summary)
+
+        self.assertTrue(any(row["rule_id"] == "shared_lut_saving_lut_only_rule" for row in design_rule_rows))
+        self.assertTrue(any(row["topic"] == "wns_numeric_use" and row["predictor_status"] == "caution_only_local_fit" for row in trust_rows))
+        self.assertTrue(any(row["boundary_id"] == "outside_domain_refusal" and row["trust_status"] == "unsupported_extrapolation" for row in choice_boundary_rows))
+        joined = " ".join(summary["summary_lines"])
+        self.assertIn("bounded", joined)
+        self.assertIn("local interpolation is acceptable", joined)
+        self.assertIn("explicitly refuses unsupported extrapolation", joined)
+
+    def test_final_artifact_index_and_reproducibility_guide_use_consistent_boundary_language(self) -> None:
+        direct_rows = self._two_scale_input_rows()
+        actual_rows = self._three_scale_actual_input_rows()
+        tradeoff_rows = build_direct_tradeoff_rows(direct_rows)
+        scaling_summary = build_direct_shared_scaling_summary(tradeoff_rows)
+        utility_rows = build_measured_utility_rows(tradeoff_rows)
+        bottleneck_rows = build_measured_bottleneck_choice_map(utility_rows, tradeoff_rows)
+        flexibility_rows = build_measured_flexibility_overhead_rows(tradeoff_rows, utility_rows)
+        flexibility_justification_rows = build_measured_flexibility_justification_table(flexibility_rows, bottleneck_rows)
+        predictor_rows = build_measured_predictor_rows(actual_rows)
+        boundary_summary = build_measured_extrapolation_boundary_summary(predictor_rows)
+        decision_rows = build_measured_decision_surface(predictor_rows, utility_rows, bottleneck_rows)
+        boundary_rows = build_measured_budget_boundary_rows(predictor_rows)
+        regime_transfer_summary = build_measured_regime_transfer_summary(decision_rows, boundary_rows, predictor_rows)
+        support_rows = build_measured_support_rows(tradeoff_rows)
+        calibration_rows = build_framework_calibration_aid_rows(direct_rows, tradeoff_rows)
+        calibration_overlay_rows = build_framework_calibration_overlay_rows(calibration_rows)
+        design_rule_rows = build_final_design_rule_table(tradeoff_rows, flexibility_justification_rows, scaling_summary)
+        trust_rows = build_final_trust_calibration_table(support_rows, calibration_overlay_rows, predictor_rows, boundary_summary)
+        choice_boundary_rows = build_final_architecture_choice_boundary_table(boundary_rows, regime_transfer_summary)
+        summary = build_final_results_summary(design_rule_rows, trust_rows, choice_boundary_rows, regime_transfer_summary)
+        artifact_index_rows = build_final_artifact_index(REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice", summary)
+        reproducibility_guide = build_final_reproducibility_guide(summary)
+
+        self.assertTrue(any(row["filename"] == "final_decision_surface_figures/timing_sensitive_unsupported.png" and row["measured_interpolation_status"] == "unsupported_extrapolation" for row in artifact_index_rows))
+        self.assertTrue(any("validated domain" in row["thesis_use_note"] or "Use in" in row["thesis_use_note"] for row in artifact_index_rows))
+        joined = " ".join(reproducibility_guide["summary_lines"])
+        self.assertIn("Interpolated within measured domain", joined)
+        self.assertIn("Unsupported extrapolation", joined)
+        self.assertIn("WNS remains caution-only", joined)
+
+    def test_final_manifest_references_existing_generated_artifacts(self) -> None:
+        output_dir = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice"
+        manifest = json.loads((output_dir / "final_results_pack_manifest.json").read_text())
+        index_rows = json.loads((output_dir / "final_artifact_index.json").read_text())
+
+        for group_key in (
+            "final_tradeoff_figures",
+            "final_predictor_validation_figures",
+            "final_decision_surface_figures",
+        ):
+            for path_str in manifest[group_key]:
+                self.assertTrue(Path(path_str).exists(), path_str)
+        self.assertEqual(manifest["regeneration_command"], "make fpga_mac_direct_final_pack")
+        self.assertIn("validated_domain", manifest)
+        for row in index_rows:
+            self.assertTrue(Path(row["absolute_path"]).exists(), row["absolute_path"])
+        timing_row = next(row for row in index_rows if row["filename"] == "final_decision_surface_figures/timing_sensitive_unsupported.png")
+        self.assertEqual(timing_row["measured_interpolation_status"], "unsupported_extrapolation")
 
 
 if __name__ == "__main__":

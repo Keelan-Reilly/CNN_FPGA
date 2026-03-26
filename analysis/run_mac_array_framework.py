@@ -16,6 +16,7 @@ try:
     from .mac_array_direct_slice import (
         build_direct_slice_comparison_rows,
         build_direct_tradeoff_rows,
+        build_direct_shared_scaling_summary,
         build_framework_calibration_aid_rows,
         build_framework_calibration_overlay_rows,
         build_framework_trust_overlay_rows,
@@ -25,6 +26,12 @@ try:
         build_measured_design_rule_extraction_summary,
         build_measured_extrapolation_boundary_summary,
         build_measured_fit_residual_rows,
+        build_final_architecture_choice_boundary_table,
+        build_final_artifact_index,
+        build_final_design_rule_table,
+        build_final_reproducibility_guide,
+        build_final_results_summary,
+        build_final_trust_calibration_table,
         build_measured_flexibility_justification_table,
         build_measured_flexibility_overhead_rows,
         build_measured_predictor_rows,
@@ -37,6 +44,12 @@ try:
         build_measured_utility_summary,
         build_shared_family_calibration_summary,
         render_measured_vs_modelled_trust_summary,
+        render_final_results_summary,
+        render_final_reproducibility_guide,
+        render_final_table_markdown,
+        render_final_tradeoff_figures,
+        render_final_predictor_validation_figures,
+        render_final_decision_surface_figures,
         render_measured_regime_transfer_summary,
         render_measured_supported_region_map,
         render_measured_utility_summary,
@@ -71,6 +84,7 @@ except ImportError:
     from mac_array_direct_slice import (
         build_direct_slice_comparison_rows,
         build_direct_tradeoff_rows,
+        build_direct_shared_scaling_summary,
         build_framework_calibration_aid_rows,
         build_framework_calibration_overlay_rows,
         build_framework_trust_overlay_rows,
@@ -80,6 +94,12 @@ except ImportError:
         build_measured_design_rule_extraction_summary,
         build_measured_extrapolation_boundary_summary,
         build_measured_fit_residual_rows,
+        build_final_architecture_choice_boundary_table,
+        build_final_artifact_index,
+        build_final_design_rule_table,
+        build_final_reproducibility_guide,
+        build_final_results_summary,
+        build_final_trust_calibration_table,
         build_measured_flexibility_justification_table,
         build_measured_flexibility_overhead_rows,
         build_measured_predictor_rows,
@@ -92,6 +112,12 @@ except ImportError:
         build_measured_utility_summary,
         build_shared_family_calibration_summary,
         render_measured_vs_modelled_trust_summary,
+        render_final_results_summary,
+        render_final_reproducibility_guide,
+        render_final_table_markdown,
+        render_final_tradeoff_figures,
+        render_final_predictor_validation_figures,
+        render_final_decision_surface_figures,
         render_measured_regime_transfer_summary,
         render_measured_supported_region_map,
         render_measured_utility_summary,
@@ -323,6 +349,7 @@ def main() -> int:
     calibration_rows = build_framework_calibration_aid_rows(direct_rows, direct_tradeoff_rows)
     calibration_overlay_rows = build_framework_calibration_overlay_rows(calibration_rows)
     calibration_summary = build_shared_family_calibration_summary(calibration_rows, calibration_overlay_rows)
+    direct_scaling_summary = build_direct_shared_scaling_summary(direct_tradeoff_rows)
     utility_rows = build_measured_utility_rows(direct_tradeoff_rows)
     bottleneck_rows = build_measured_bottleneck_choice_map(utility_rows, direct_tradeoff_rows)
     utility_summary = build_measured_utility_summary(utility_rows, bottleneck_rows)
@@ -340,6 +367,29 @@ def main() -> int:
         predictor_rows,
     )
     supported_region_map = build_measured_supported_region_map(decision_surface_rows, budget_boundary_rows)
+    final_design_rule_rows = build_final_design_rule_table(
+        direct_tradeoff_rows,
+        flexibility_justification_rows,
+        direct_scaling_summary,
+    )
+    final_trust_calibration_rows = build_final_trust_calibration_table(
+        support_rows,
+        calibration_overlay_rows,
+        predictor_rows,
+        extrapolation_boundary,
+    )
+    final_architecture_choice_boundary_rows = build_final_architecture_choice_boundary_table(
+        budget_boundary_rows,
+        regime_transfer_summary,
+    )
+    final_results_summary = build_final_results_summary(
+        final_design_rule_rows,
+        final_trust_calibration_rows,
+        final_architecture_choice_boundary_rows,
+        regime_transfer_summary,
+    )
+    final_artifact_index_rows = build_final_artifact_index(output_dir, final_results_summary)
+    final_reproducibility_guide = build_final_reproducibility_guide(final_results_summary)
     provenance_rows = provenance_summary_rows(evidence)
 
     def regime_adaptive_factory(grid_label: str, workload_name: str, constraint: ConstraintSpec) -> dict[str, Any] | None:
@@ -414,6 +464,16 @@ def main() -> int:
     write_json(output_dir / "measured_budget_boundary_table.json", budget_boundary_rows)
     write_json(output_dir / "measured_regime_transfer_summary.json", regime_transfer_summary)
     write_json(output_dir / "measured_supported_region_map.json", supported_region_map)
+    write_csv(output_dir / "final_design_rule_table.csv", final_design_rule_rows)
+    write_json(output_dir / "final_design_rule_table.json", final_design_rule_rows)
+    write_csv(output_dir / "final_trust_calibration_table.csv", final_trust_calibration_rows)
+    write_json(output_dir / "final_trust_calibration_table.json", final_trust_calibration_rows)
+    write_csv(output_dir / "final_architecture_choice_boundary_table.csv", final_architecture_choice_boundary_rows)
+    write_json(output_dir / "final_architecture_choice_boundary_table.json", final_architecture_choice_boundary_rows)
+    write_json(output_dir / "final_results_summary.json", final_results_summary)
+    write_csv(output_dir / "final_artifact_index.csv", final_artifact_index_rows)
+    write_json(output_dir / "final_artifact_index.json", final_artifact_index_rows)
+    write_json(output_dir / "final_reproducibility_guide.json", final_reproducibility_guide)
     write_csv(output_dir / "workload_manifest.csv", workload_manifest_rows)
     write_json(output_dir / "workload_manifest.json", workload_manifest_rows)
     write_csv(output_dir / "static_architectures.csv", static_rows)
@@ -496,6 +556,24 @@ def main() -> int:
         output_path=output_dir / "measured_supported_region_map.md",
         summary=supported_region_map,
     )
+    render_final_results_summary(output_path=output_dir / "final_results_summary.md", summary=final_results_summary)
+    render_final_table_markdown(output_dir / "final_artifact_index.md", "Final Artifact Index", final_artifact_index_rows)
+    render_final_table_markdown(output_dir / "final_design_rule_table.md", "Final Design Rule Table", final_design_rule_rows)
+    render_final_table_markdown(
+        output_dir / "final_trust_calibration_table.md",
+        "Final Trust Calibration Table",
+        final_trust_calibration_rows,
+    )
+    render_final_table_markdown(
+        output_dir / "final_architecture_choice_boundary_table.md",
+        "Final Architecture Choice Boundary Table",
+        final_architecture_choice_boundary_rows,
+    )
+    render_final_reproducibility_guide(
+        output_dir / "final_reproducibility_guide.md",
+        final_reproducibility_guide,
+        final_artifact_index_rows,
+    )
     render_regime_insights_markdown(
         output_path=output_dir / "regime_insights.md",
         regime_meta=regime_meta,
@@ -512,6 +590,36 @@ def main() -> int:
         rejection_surface_rows,
     )
     write_json(output_dir / "generated_plots.json", [str(path) for path in generated_plots])
+    final_tradeoff_figures = render_final_tradeoff_figures(output_dir / "final_tradeoff_figures", direct_rows)
+    final_predictor_figures = render_final_predictor_validation_figures(
+        output_dir / "final_predictor_validation_figures",
+        direct_rows,
+        predictor_rows,
+        predictor_residual_rows,
+    )
+    final_decision_figures = render_final_decision_surface_figures(
+        output_dir / "final_decision_surface_figures",
+        decision_surface_rows,
+        budget_boundary_rows,
+    )
+    write_json(
+        output_dir / "final_results_pack_manifest.json",
+        {
+            "final_tradeoff_figures": final_tradeoff_figures,
+            "final_predictor_validation_figures": final_predictor_figures,
+            "final_decision_surface_figures": final_decision_figures,
+            "final_tables": [
+                "final_design_rule_table.csv/json/md",
+                "final_trust_calibration_table.csv/json/md",
+                "final_architecture_choice_boundary_table.csv/json/md",
+                "final_artifact_index.csv/json/md",
+            ],
+            "final_summary": "final_results_summary.md/json",
+            "final_reproducibility_guide": "final_reproducibility_guide.md/json",
+            "validated_domain": final_reproducibility_guide["validated_domain"],
+            "regeneration_command": final_reproducibility_guide["regeneration_command"],
+        },
+    )
 
     print(f"Wrote MAC-array framework v2 outputs to {output_dir}")
     return 0

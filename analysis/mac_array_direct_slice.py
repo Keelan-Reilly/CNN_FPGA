@@ -888,6 +888,380 @@ def build_measured_regime_transfer_summary(
     }
 
 
+def _variant_label(architecture_variant: str) -> str:
+    return {
+        "baseline": "baseline",
+        "shared_lut_saving": "shared_lut_saving",
+        "shared_dsp_reducing": "shared_dsp_reducing",
+    }.get(architecture_variant, architecture_variant)
+
+
+def _variant_color(architecture_variant: str) -> str:
+    return {
+        "baseline": "#1f4e79",
+        "shared_lut_saving": "#2e8b57",
+        "shared_dsp_reducing": "#c75b12",
+    }.get(architecture_variant, "#444444")
+
+
+def _trust_marker(trust_status: str) -> str:
+    return {
+        MEASURED_LATTICE_POINT: "o",
+        INTERPOLATED_WITHIN_MEASURED_DOMAIN: "s",
+        UNSUPPORTED_EXTRAPOLATION: "x",
+    }.get(trust_status, "o")
+
+
+def build_final_design_rule_table(
+    tradeoff_rows: list[dict[str, Any]],
+    flexibility_justification_rows: list[dict[str, Any]],
+    scaling_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not tradeoff_rows or not flexibility_justification_rows:
+        return []
+    lut_rows = [row for row in tradeoff_rows if row["shared_architecture_variant"] == "shared_lut_saving"]
+    dsp_rows = [row for row in tradeoff_rows if row["shared_architecture_variant"] == "shared_dsp_reducing"]
+    lut_relief_min = min(abs(row["measured_lut_delta_shared_minus_baseline"]) for row in lut_rows if row["measured_lut_delta_shared_minus_baseline"] is not None)
+    lut_relief_max = max(abs(row["measured_lut_delta_shared_minus_baseline"]) for row in lut_rows if row["measured_lut_delta_shared_minus_baseline"] is not None)
+    dsp_relief_min = min(abs(row["measured_dsp_delta_shared_minus_baseline"]) for row in dsp_rows if row["measured_dsp_delta_shared_minus_baseline"] is not None)
+    dsp_relief_max = max(abs(row["measured_dsp_delta_shared_minus_baseline"]) for row in dsp_rows if row["measured_dsp_delta_shared_minus_baseline"] is not None)
+    throughput_retention = lut_rows[0]["measured_throughput_retention_pct"]
+    latency_factor = lut_rows[0]["measured_latency_increase_factor"]
+    return [
+        {
+            "rule_id": "baseline_performance_first_default",
+            "preferred_variant": "baseline",
+            "measured_domain": "4x4, 8x4, 8x8 direct slice at k_depth=32",
+            "when_justified": "Throughput or latency dominates, or no hard LUT/DSP bottleneck exists.",
+            "when_not_justified": "A real LUT-only or DSP-only bottleneck dominates and the corresponding shared implementation is the only relief that fits.",
+            "measured_cost_or_benefit": f"Retains the shortest measured schedule at 33 cycles and the highest measured throughput across the direct-slice lattice.",
+            "trust_status": DIRECTLY_MEASURED_SUPPORTED,
+        },
+        {
+            "rule_id": "shared_lut_saving_lut_only_rule",
+            "preferred_variant": "shared_lut_saving",
+            "measured_domain": "4x4, 8x4, 8x8 direct slice at k_depth=32",
+            "when_justified": "LUT pressure is the dominant bottleneck and performance bounds are relaxed enough for the shared schedule.",
+            "when_not_justified": "DSP pressure, throughput, or latency dominates.",
+            "measured_cost_or_benefit": f"Relieves `{lut_relief_min}`..`{lut_relief_max}` LUT versus baseline while retaining `{throughput_retention}`% throughput and increasing latency by `{latency_factor}`x.",
+            "trust_status": DIRECTLY_MEASURED_SUPPORTED,
+        },
+        {
+            "rule_id": "shared_dsp_reducing_dsp_only_rule",
+            "preferred_variant": "shared_dsp_reducing",
+            "measured_domain": "4x4, 8x4, 8x8 direct slice at k_depth=32",
+            "when_justified": "DSP pressure is the dominant bottleneck and the larger LUT footprint still fits.",
+            "when_not_justified": "LUT pressure, throughput, or latency dominates.",
+            "measured_cost_or_benefit": f"Relieves `{dsp_relief_min}`..`{dsp_relief_max}` DSP versus baseline while retaining `{throughput_retention}`% throughput and increasing latency by `{latency_factor}`x.",
+            "trust_status": DIRECTLY_MEASURED_SUPPORTED,
+        },
+        {
+            "rule_id": "flexibility_not_a_free_win",
+            "preferred_variant": "baseline",
+            "measured_domain": "4x4, 8x4, 8x8 direct slice at k_depth=32",
+            "when_justified": "No hard resource bottleneck dominates or the relieved bottleneck matters less than the lost performance.",
+            "when_not_justified": "A hard LUT-only or DSP-only window forces a shared choice.",
+            "measured_cost_or_benefit": "The measured three-way rule survives through 8x8: implementation style determines whether sharing buys LUT relief, DSP relief, or only overhead.",
+            "trust_status": scaling_summary.get("overall_rule_status", DIRECTLY_MEASURED_SUPPORTED),
+        },
+    ]
+
+
+def build_final_trust_calibration_table(
+    support_rows: list[dict[str, Any]],
+    calibration_overlay_rows: list[dict[str, Any]],
+    predictor_rows: list[dict[str, Any]],
+    extrapolation_boundary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not support_rows or not calibration_overlay_rows or not predictor_rows:
+        return []
+    predictor_by_metric = {}
+    for row in predictor_rows:
+        predictor_by_metric.setdefault(row["metric"], []).append(row)
+    support_lookup = {row["claim_id"]: row for row in support_rows}
+    overlay_lookup = {row["overlay_topic"]: row for row in calibration_overlay_rows}
+    domain_min = extrapolation_boundary.get("interpolation_domain_mac_units_min")
+    domain_max = extrapolation_boundary.get("interpolation_domain_mac_units_max")
+    return [
+        {
+            "topic": "baseline_role",
+            "measured_support": support_lookup["baseline_performance_first_role"]["support_level"],
+            "calibration_status": overlay_lookup["baseline_lut_expectation"]["calibration_status"],
+            "predictor_status": "exact_for_dsp_latency_throughput; local_linear_for_lut_ff",
+            "bounded_domain": f"{domain_min} <= mac_units <= {domain_max} at k_depth=32",
+            "usage_note": "Baseline role is directly measured supported on the isolated slice; use the predictor locally within the validated domain.",
+        },
+        {
+            "topic": "shared_lut_saving_role",
+            "measured_support": support_lookup["shared_lut_saving_lut_relief_role"]["support_level"],
+            "calibration_status": overlay_lookup["shared_family_lut_expectation"]["calibration_status"],
+            "predictor_status": "exact_for_dsp_latency_throughput; local_linear_for_lut_ff",
+            "bounded_domain": f"{domain_min} <= mac_units <= {domain_max} at k_depth=32",
+            "usage_note": "Treat as an implementation-specific LUT-relief mechanism, not a universal shared-family numeric truth.",
+        },
+        {
+            "topic": "shared_dsp_reducing_role",
+            "measured_support": support_lookup["shared_dsp_reducing_dsp_relief_role"]["support_level"],
+            "calibration_status": overlay_lookup["shared_family_dsp_expectation"]["calibration_status"],
+            "predictor_status": "exact_for_dsp_latency_throughput; local_linear_for_lut_ff",
+            "bounded_domain": f"{domain_min} <= mac_units <= {domain_max} at k_depth=32",
+            "usage_note": "Treat as an implementation-specific DSP-relief mechanism, not a universal shared-family numeric truth.",
+        },
+        {
+            "topic": "shared_family_numeric_projection",
+            "measured_support": support_lookup["shared_family_dsp_relief"]["support_level"],
+            "calibration_status": overlay_lookup["shared_family_numeric_projection_boundary"]["calibration_status"],
+            "predictor_status": "modelled_family_with_measured_caution_band",
+            "bounded_domain": "outside the isolated direct-slice predictor scope",
+            "usage_note": "Shared-family framework numbers remain modelled-family expectations read through trust and calibration overlays, not replaced by the local predictor.",
+        },
+        {
+            "topic": "wns_numeric_use",
+            "measured_support": "measured_caution_only",
+            "calibration_status": "too_unstable_for_numeric_trust",
+            "predictor_status": "caution_only_local_fit",
+            "bounded_domain": f"{domain_min} <= mac_units <= {domain_max} at k_depth=32",
+            "usage_note": "WNS is measured on the lattice, but remains too unstable for trusted timing-sensitive interpolation.",
+        },
+        {
+            "topic": "outside_domain_architecture_choice",
+            "measured_support": UNSUPPORTED_EXTRAPOLATION,
+            "calibration_status": "not_applicable",
+            "predictor_status": "unsupported_extrapolation",
+            "bounded_domain": f"mac_units < {domain_min} or mac_units > {domain_max}",
+            "usage_note": "The repo should explicitly refuse a predictor-backed architecture choice outside the validated direct-slice domain.",
+        },
+    ]
+
+
+def build_final_architecture_choice_boundary_table(
+    boundary_rows: list[dict[str, Any]],
+    regime_transfer_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not boundary_rows:
+        return []
+    measured_rows = [row for row in boundary_rows if row["trust_status"] == MEASURED_LATTICE_POINT]
+    rows: list[dict[str, Any]] = []
+    for row in measured_rows:
+        rows.extend(
+            [
+                {
+                    "boundary_id": f"lut_window_{row['mac_units']}",
+                    "mac_units": row["mac_units"],
+                    "trust_status": row["trust_status"],
+                    "boundary_kind": "lut_pressure",
+                    "preferred_variant": "shared_lut_saving",
+                    "selection_boundary": f"LUT budget in [`{round(row['lut_budget_shared_lut_min'], 3)}`, `{round(row['lut_budget_baseline_min'], 3)}`) with relaxed throughput/latency constraints.",
+                    "usage_note": "Inside this window, shared_lut_saving is the measured lowest-LUT option and is the only shared variant worth the schedule overhead.",
+                },
+                {
+                    "boundary_id": f"dsp_window_{row['mac_units']}",
+                    "mac_units": row["mac_units"],
+                    "trust_status": row["trust_status"],
+                    "boundary_kind": "dsp_pressure",
+                    "preferred_variant": "shared_dsp_reducing",
+                    "selection_boundary": f"DSP budget in [`{round(row['dsp_budget_shared_dsp_min'], 3)}`, `{round(row['dsp_budget_baseline_min'], 3)}`) with LUT budget >= `{round(row['shared_dsp_lut_floor'], 3)}` and relaxed throughput/latency constraints.",
+                    "usage_note": "Inside this window, shared_dsp_reducing is the only measured option that actually relieves DSP pressure.",
+                },
+                {
+                    "boundary_id": f"baseline_default_{row['mac_units']}",
+                    "mac_units": row["mac_units"],
+                    "trust_status": row["trust_status"],
+                    "boundary_kind": "baseline_default",
+                    "preferred_variant": "baseline",
+                    "selection_boundary": f"LUT budget >= `{round(row['lut_budget_baseline_min'], 3)}` and DSP budget >= `{round(row['dsp_budget_baseline_min'], 3)}`, or throughput > `{round(row['shared_throughput_floor_ops_per_cycle'], 6)}`.",
+                    "usage_note": "Once baseline fits and performance matters, the shared schedule penalty is not justified.",
+                },
+            ]
+        )
+    rows.append(
+        {
+            "boundary_id": "timing_sensitive_interpolation_refused",
+            "mac_units": None,
+            "trust_status": UNSUPPORTED_EXTRAPOLATION,
+            "boundary_kind": "timing_margin",
+            "preferred_variant": "measured_grid_lookup_only",
+            "selection_boundary": "No smooth timing-sensitive boundary is claimed.",
+            "usage_note": "Timing-sensitive choice remains excluded from the smooth surface because WNS is caution-only.",
+        }
+    )
+    rows.append(
+        {
+            "boundary_id": "outside_domain_refusal",
+            "mac_units": None,
+            "trust_status": UNSUPPORTED_EXTRAPOLATION,
+            "boundary_kind": "outside_domain",
+            "preferred_variant": "refuse_to_claim",
+            "selection_boundary": f"Outside {regime_transfer_summary.get('interpolation_domain_mac_units_min')} <= mac_units <= {regime_transfer_summary.get('interpolation_domain_mac_units_max')} at k_depth=32.",
+            "usage_note": "The repo explicitly refuses a predictor-backed architecture choice outside the validated direct-slice domain.",
+        }
+    )
+    return rows
+
+
+def build_final_results_summary(
+    design_rule_table: list[dict[str, Any]],
+    trust_calibration_table: list[dict[str, Any]],
+    boundary_table: list[dict[str, Any]],
+    regime_transfer_summary: dict[str, Any],
+) -> dict[str, Any]:
+    if not design_rule_table or not trust_calibration_table or not boundary_table:
+        return {}
+    return {
+        "headline": "This final direct-slice results pack turns the measured lattice into a bounded thesis-ready conclusion for what each architecture buys, what it costs, and when it should be chosen.",
+        "summary_lines": [
+            "Across the measured 4x4, 8x4, and 8x8 direct-slice lattice, baseline remains the performance-first option, shared_lut_saving remains the LUT-relief option, and shared_dsp_reducing remains the DSP-relief option.",
+            "The measured shared implementations are not generally better architectures; they are bottleneck-specific relief mechanisms whose utility disappears when the relieved bottleneck does not dominate the lost performance.",
+            "Within the validated domain 16 <= mac_units <= 64 at k_depth=32, local interpolation is acceptable for DSP, latency, throughput, LUT, and FF under the measured predictor, while WNS remains caution-only.",
+            "The final decision surface is bounded: it supports predictor-backed LUT and DSP budget windows inside the measured domain and explicitly refuses unsupported extrapolation outside it.",
+            "These conclusions are specific to the isolated baseline/shared_lut_saving/shared_dsp_reducing direct-slice family and should not be silently promoted to the broader shared-family framework model.",
+        ],
+        "design_rule_row_count": len(design_rule_table),
+        "trust_calibration_row_count": len(trust_calibration_table),
+        "boundary_row_count": len(boundary_table),
+        "interpolation_domain_mac_units_min": regime_transfer_summary.get("interpolation_domain_mac_units_min"),
+        "interpolation_domain_mac_units_max": regime_transfer_summary.get("interpolation_domain_mac_units_max"),
+    }
+
+
+def build_final_artifact_index(output_dir: Path, final_results_summary: dict[str, Any]) -> list[dict[str, Any]]:
+    domain_min = final_results_summary.get("interpolation_domain_mac_units_min")
+    domain_max = final_results_summary.get("interpolation_domain_mac_units_max")
+    domain_note = f"{domain_min} <= mac_units <= {domain_max} at k_depth=32"
+    rows = [
+        {
+            "filename": "final_tradeoff_figures/lut_vs_mac_units.png",
+            "purpose": "Final architecture tradeoff figure for LUT scaling across the direct-slice family.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}",
+            "thesis_use_note": f"Use in Results to show that shared_lut_saving is the LUT-relief option within the validated domain {domain_note}.",
+        },
+        {
+            "filename": "final_tradeoff_figures/dsp_vs_mac_units.png",
+            "purpose": "Final architecture tradeoff figure for DSP scaling across the direct-slice family.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}",
+            "thesis_use_note": "Use in Results to show that shared_dsp_reducing is the DSP-relief option while shared_lut_saving stays DSP-flat.",
+        },
+        {
+            "filename": "final_tradeoff_figures/throughput_vs_mac_units.png",
+            "purpose": "Final architecture tradeoff figure for throughput scaling and shared overhead.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}",
+            "thesis_use_note": "Use in Results to show that baseline remains the performance-first option and that shared overhead is schedule-driven.",
+        },
+        {
+            "filename": "final_tradeoff_figures/latency_vs_mac_units.png",
+            "purpose": "Final architecture tradeoff figure for latency scaling and fixed schedule overhead.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}",
+            "thesis_use_note": "Use in Results or Discussion to show that both shared implementations pay the 65-cycle schedule while baseline stays at 33 cycles.",
+        },
+        {
+            "filename": "final_tradeoff_figures/wns_vs_mac_units_caution.png",
+            "purpose": "Caution-only WNS trend figure across the direct-slice family.",
+            "measured_interpolation_status": "caution_only_wns",
+            "thesis_use_note": "Use only as a cautionary timing trend figure; do not use it to claim a smooth timing-sensitive decision boundary.",
+        },
+        {
+            "filename": "final_predictor_validation_figures/measured_vs_fitted_lut.png",
+            "purpose": "Predictor validation figure for measured versus fitted LUT scaling.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}",
+            "thesis_use_note": "Use in Methods/Results to show that LUT admits a compact local linear fit over the validated direct-slice domain.",
+        },
+        {
+            "filename": "final_predictor_validation_figures/measured_vs_fitted_ff.png",
+            "purpose": "Predictor validation figure for measured versus fitted FF scaling.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}",
+            "thesis_use_note": "Use in Methods/Results to show that FF is predictable locally but remains part of the bounded direct-slice predictor only.",
+        },
+        {
+            "filename": "final_predictor_validation_figures/residuals_lut.png",
+            "purpose": "Residual plot for the LUT local fit.",
+            "measured_interpolation_status": MEASURED_LATTICE_POINT,
+            "thesis_use_note": "Use in Results appendix or validation subsection to justify interpolation trust for LUT.",
+        },
+        {
+            "filename": "final_predictor_validation_figures/residuals_ff.png",
+            "purpose": "Residual plot for the FF local fit.",
+            "measured_interpolation_status": MEASURED_LATTICE_POINT,
+            "thesis_use_note": "Use in Results appendix or validation subsection to justify interpolation trust for FF.",
+        },
+        {
+            "filename": "final_predictor_validation_figures/residuals_wns_caution.png",
+            "purpose": "Residual plot for the caution-only WNS fit.",
+            "measured_interpolation_status": "caution_only_wns",
+            "thesis_use_note": "Use only to justify why timing-sensitive interpolation is explicitly unsupported.",
+        },
+        {
+            "filename": "final_decision_surface_figures/supported_choice_regions.png",
+            "purpose": "Final measured decision-surface figure over supported architecture-choice regions.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}, {UNSUPPORTED_EXTRAPOLATION}",
+            "thesis_use_note": "Use in Results/Discussion to show where baseline, shared_lut_saving, and shared_dsp_reducing are preferred inside the validated direct-slice domain.",
+        },
+        {
+            "filename": "final_decision_surface_figures/lut_pressure_decision_boundary.png",
+            "purpose": "Final LUT-pressure boundary figure for when shared_lut_saving is worth its overhead.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}",
+            "thesis_use_note": "Use in Discussion to show the bounded LUT-only window where shared_lut_saving is justified.",
+        },
+        {
+            "filename": "final_decision_surface_figures/dsp_pressure_decision_boundary.png",
+            "purpose": "Final DSP-pressure boundary figure for when shared_dsp_reducing is worth its overhead.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}",
+            "thesis_use_note": "Use in Discussion to show the bounded DSP-only window and its coupled LUT admission requirement.",
+        },
+        {
+            "filename": "final_decision_surface_figures/timing_sensitive_unsupported.png",
+            "purpose": "Explicit unsupported figure for timing-sensitive interpolation.",
+            "measured_interpolation_status": UNSUPPORTED_EXTRAPOLATION,
+            "thesis_use_note": "Use to defend the explicit refusal to claim a smooth timing-sensitive architecture-choice surface.",
+        },
+        {
+            "filename": "final_design_rule_table.md",
+            "purpose": "Compact final table of measured design rules for what each architecture buys and costs.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}",
+            "thesis_use_note": "Use directly in the Results or Discussion chapter as the compact architecture-rule table.",
+        },
+        {
+            "filename": "final_trust_calibration_table.md",
+            "purpose": "Compact final table of trust, calibration, and bounded predictor status.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}, {UNSUPPORTED_EXTRAPOLATION}",
+            "thesis_use_note": "Use in Methods/Discussion to explain what is directly measured, locally interpolated, caution-only, or explicitly refused.",
+        },
+        {
+            "filename": "final_architecture_choice_boundary_table.md",
+            "purpose": "Compact final table of predictor-backed architecture-choice boundaries.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}, {UNSUPPORTED_EXTRAPOLATION}",
+            "thesis_use_note": "Use in Discussion to show the bounded LUT-pressure and DSP-pressure windows together with the explicit refusal outside the validated domain.",
+        },
+        {
+            "filename": "final_results_summary.md",
+            "purpose": "Concise thesis-style final subsection text for the direct-slice family.",
+            "measured_interpolation_status": f"{MEASURED_LATTICE_POINT}, {INTERPOLATED_WITHIN_MEASURED_DOMAIN}, {UNSUPPORTED_EXTRAPOLATION}",
+            "thesis_use_note": "Use directly as the draft nucleus for the final Results/Discussion subsection.",
+        },
+    ]
+    for row in rows:
+        row["absolute_path"] = str((output_dir / row["filename"]).resolve())
+    return rows
+
+
+def build_final_reproducibility_guide(final_results_summary: dict[str, Any]) -> dict[str, Any]:
+    domain_min = final_results_summary.get("interpolation_domain_mac_units_min")
+    domain_max = final_results_summary.get("interpolation_domain_mac_units_max")
+    return {
+        "headline": "This guide freezes the direct-slice family results pack into a single reproducible thesis-ready pipeline without changing the measured conclusions.",
+        "regeneration_command": "make fpga_mac_direct_final_pack",
+        "direct_runner_command": "python3 analysis/run_mac_array_direct_slice.py",
+        "framework_runner_command": "python3 analysis/run_mac_array_framework.py --config experiments/configs/mac_array_framework_v2.json",
+        "validated_domain": f"{domain_min} <= mac_units <= {domain_max} at k_depth=32 for the isolated baseline/shared_lut_saving/shared_dsp_reducing direct-slice family.",
+        "summary_lines": [
+            "Directly measured lattice points are the measured 4x4, 8x4, and 8x8 direct-slice runs for baseline, shared_lut_saving, and shared_dsp_reducing.",
+            "Interpolated within measured domain applies only to the local direct-slice predictor and the bounded decision surface inside the validated domain.",
+            "Unsupported extrapolation applies outside the validated mac-unit domain and to any smooth timing-sensitive interpolation claim.",
+            "WNS remains caution-only: it may be plotted and reported at measured points, but it is not promoted to a trusted timing-sensitive interpolation surface.",
+            "The final figures and tables are thesis-use artifacts for the isolated direct-slice family only and do not silently replace the broader shared-family framework model.",
+        ],
+    }
+
+
 def _measured_relief_kind(measured_dsp_delta: int | None, measured_lut_delta: int | None) -> str:
     dsp_relief = measured_dsp_delta is not None and measured_dsp_delta < 0
     lut_relief = measured_lut_delta is not None and measured_lut_delta < 0
@@ -2702,6 +3076,333 @@ def render_measured_design_rules(output_path: Path, summary: dict[str, Any]) -> 
             lines.append(f"- {line}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n")
+
+
+def render_final_results_summary(output_path: Path, summary: dict[str, Any]) -> None:
+    lines = [
+        "# Final Results Summary",
+        "",
+    ]
+    if not summary:
+        lines.append("- No final direct-slice results summary is available yet.")
+    else:
+        lines.append(f"- {summary['headline']}")
+        for line in summary["summary_lines"]:
+            lines.append(f"- {line}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n")
+
+
+def render_final_reproducibility_guide(
+    output_path: Path,
+    guide: dict[str, Any],
+    artifact_index_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Final Direct-Slice Family Reproducibility Guide",
+        "",
+    ]
+    if not guide:
+        lines.append("- No reproducibility guide is available yet.")
+    else:
+        lines.append(f"- {guide['headline']}")
+        lines.append(f"- Regeneration target: `{guide['regeneration_command']}`")
+        lines.append(f"- Direct-slice runner: `{guide['direct_runner_command']}`")
+        lines.append(f"- Framework pack refresh: `{guide['framework_runner_command']}`")
+        lines.append(f"- Validated domain: {guide['validated_domain']}")
+        for line in guide["summary_lines"]:
+            lines.append(f"- {line}")
+        lines.extend(["", "## Thesis Artifact Roles", ""])
+        for row in artifact_index_rows:
+            lines.append(f"- `{row['filename']}`: {row['thesis_use_note']}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n")
+
+
+def _render_simple_markdown_table(output_path: Path, title: str, rows: list[dict[str, Any]]) -> None:
+    lines = [f"# {title}", ""]
+    if not rows:
+        lines.append("- No rows available.")
+    else:
+        headers = list(rows[0].keys())
+        lines.append("| " + " | ".join(headers) + " |")
+        lines.append("| " + " | ".join("---" for _ in headers) + " |")
+        for row in rows:
+            lines.append("| " + " | ".join(str(row.get(header, "")) for header in headers) + " |")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n")
+
+
+def render_final_table_markdown(output_path: Path, title: str, rows: list[dict[str, Any]]) -> None:
+    _render_simple_markdown_table(output_path, title, rows)
+
+
+def _direct_slice_plot_setup():
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/cnn_fpga_mplconfig")
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError:
+        return None
+    return plt
+
+
+def render_final_tradeoff_figures(output_dir: Path, rows: list[dict[str, Any]]) -> list[str]:
+    plt = _direct_slice_plot_setup()
+    if plt is None:
+        return []
+    measured_rows = sorted(
+        [row for row in rows if row["comparison_status"] == "direct_measured_vs_modelled"],
+        key=lambda row: (row["architecture"], row["mac_units"]),
+    )
+    if not measured_rows:
+        return []
+    output_dir.mkdir(parents=True, exist_ok=True)
+    generated: list[str] = []
+    metric_specs = [
+        ("measured_lut", "LUT", "Measured LUT vs MAC Units", "lut_vs_mac_units.png"),
+        ("measured_dsp", "DSP", "Measured DSP vs MAC Units", "dsp_vs_mac_units.png"),
+        (
+            "measured_effective_throughput_ops_per_cycle",
+            "Throughput (ops/cycle)",
+            "Measured Throughput vs MAC Units",
+            "throughput_vs_mac_units.png",
+        ),
+        ("measured_latency_cycles", "Latency (cycles)", "Measured Latency vs MAC Units", "latency_vs_mac_units.png"),
+        ("measured_wns_ns", "WNS (ns)", "Measured WNS vs MAC Units (Caution-Only)", "wns_vs_mac_units_caution.png"),
+    ]
+    by_variant: dict[str, list[dict[str, Any]]] = {}
+    for row in measured_rows:
+        by_variant.setdefault(row["architecture"], []).append(row)
+    for metric_key, ylabel, title, filename in metric_specs:
+        fig, ax = plt.subplots(figsize=(7.2, 4.6))
+        for architecture_variant in ("baseline", "shared_lut_saving", "shared_dsp_reducing"):
+            variant_rows = sorted(by_variant.get(architecture_variant, []), key=lambda item: item["mac_units"])
+            if not variant_rows:
+                continue
+            ax.plot(
+                [row["mac_units"] for row in variant_rows],
+                [row[metric_key] for row in variant_rows],
+                marker="o",
+                linewidth=2.0,
+                color=_variant_color(architecture_variant),
+                label=_variant_label(architecture_variant),
+            )
+        ax.set_xlabel("MAC units")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        path = output_dir / filename
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        generated.append(str(path))
+    return generated
+
+
+def render_final_predictor_validation_figures(
+    output_dir: Path,
+    rows: list[dict[str, Any]],
+    predictor_rows: list[dict[str, Any]],
+    residual_rows: list[dict[str, Any]],
+) -> list[str]:
+    plt = _direct_slice_plot_setup()
+    if plt is None:
+        return []
+    measured_rows = sorted(
+        [row for row in rows if row["comparison_status"] == "direct_measured_vs_modelled"],
+        key=lambda row: (row["architecture"], row["mac_units"]),
+    )
+    if not measured_rows or not predictor_rows:
+        return []
+    output_dir.mkdir(parents=True, exist_ok=True)
+    generated: list[str] = []
+    predictor_lookup = {(row["architecture_variant"], row["metric"]): row for row in predictor_rows}
+    for metric, filename, title in (
+        ("lut", "measured_vs_fitted_lut.png", "Measured vs Fitted LUT (Local Linear Fit)"),
+        ("ff", "measured_vs_fitted_ff.png", "Measured vs Fitted FF (Local Linear Fit)"),
+    ):
+        fig, ax = plt.subplots(figsize=(7.2, 4.6))
+        for architecture_variant in ("baseline", "shared_lut_saving", "shared_dsp_reducing"):
+            variant_rows = sorted(
+                [row for row in measured_rows if row["architecture"] == architecture_variant],
+                key=lambda item: item["mac_units"],
+            )
+            if not variant_rows:
+                continue
+            predictor = predictor_lookup[(architecture_variant, metric)]
+            xs = [row["mac_units"] for row in variant_rows]
+            measured_values = [row[f"measured_{metric}"] for row in variant_rows]
+            fitted_values = [
+                _predict_from_formula(predictor["predictor_formula"], row["mac_units"], row["k_depth"])
+                for row in variant_rows
+            ]
+            ax.scatter(xs, measured_values, color=_variant_color(architecture_variant), marker="o", label=f"{architecture_variant} measured")
+            ax.plot(xs, fitted_values, color=_variant_color(architecture_variant), linestyle="--", linewidth=2.0, label=f"{architecture_variant} fit")
+        ax.set_xlabel("MAC units")
+        ax.set_ylabel(metric.upper())
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8, ncol=2)
+        fig.tight_layout()
+        path = output_dir / filename
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        generated.append(str(path))
+    for metric, filename, title in (
+        ("lut", "residuals_lut.png", "LUT Fit Residuals"),
+        ("ff", "residuals_ff.png", "FF Fit Residuals"),
+        ("wns_ns", "residuals_wns_caution.png", "WNS Fit Residuals (Caution-Only)"),
+    ):
+        fig, ax = plt.subplots(figsize=(7.2, 4.6))
+        ax.axhline(0.0, color="#333333", linewidth=1.0, linestyle=":")
+        for architecture_variant in ("baseline", "shared_lut_saving", "shared_dsp_reducing"):
+            metric_rows = sorted(
+                [row for row in residual_rows if row["architecture_variant"] == architecture_variant and row["metric"] == metric],
+                key=lambda item: item["mac_units"],
+            )
+            if not metric_rows:
+                continue
+            ax.plot(
+                [row["mac_units"] for row in metric_rows],
+                [row["residual"] for row in metric_rows],
+                marker="o",
+                linewidth=1.8,
+                color=_variant_color(architecture_variant),
+                label=_variant_label(architecture_variant),
+            )
+        ax.set_xlabel("MAC units")
+        ax.set_ylabel("Residual")
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        path = output_dir / filename
+        fig.savefig(path, dpi=160)
+        plt.close(fig)
+        generated.append(str(path))
+    return generated
+
+
+def render_final_decision_surface_figures(
+    output_dir: Path,
+    decision_rows: list[dict[str, Any]],
+    boundary_rows: list[dict[str, Any]],
+) -> list[str]:
+    plt = _direct_slice_plot_setup()
+    if plt is None:
+        return []
+    if not decision_rows or not boundary_rows:
+        return []
+    output_dir.mkdir(parents=True, exist_ok=True)
+    generated: list[str] = []
+    supported_decisions = sorted(
+        [row for row in decision_rows if row["regime_id"] != "unsupported_extrapolation_boundary"],
+        key=lambda row: (row["regime_id"], row["mac_units"]),
+    )
+    regime_order = [
+        "lut_budget_tight_relaxed_performance",
+        "dsp_budget_tight_relaxed_performance",
+        "performance_or_latency_dominant",
+        "no_hard_resource_bottleneck",
+        "timing_margin_sensitive",
+    ]
+    regime_y = {regime: index for index, regime in enumerate(reversed(regime_order))}
+    color_by_preference = {
+        "baseline": _variant_color("baseline"),
+        "shared_lut_saving": _variant_color("shared_lut_saving"),
+        "shared_dsp_reducing": _variant_color("shared_dsp_reducing"),
+        "unsupported_within_surface": "#999999",
+        "refuse_to_claim": "#bbbbbb",
+    }
+    fig, ax = plt.subplots(figsize=(9.0, 4.8))
+    for row in supported_decisions:
+        ax.scatter(
+            row["mac_units"],
+            regime_y[row["regime_id"]],
+            color=color_by_preference.get(row["preferred_variant"], "#666666"),
+            marker=_trust_marker(row["trust_status"]),
+            s=48,
+        )
+    ax.set_xlabel("MAC units")
+    ax.set_yticks([regime_y[regime] for regime in reversed(regime_order)])
+    ax.set_yticklabels(
+        [
+            "LUT-pressure",
+            "DSP-pressure",
+            "Performance/latency",
+            "No bottleneck",
+            "Timing-sensitive\nunsupported",
+        ]
+    )
+    ax.set_title("Supported Architecture-Choice Regions")
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    path = output_dir / "supported_choice_regions.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    generated.append(str(path))
+
+    supported_boundary_rows = sorted(
+        [row for row in boundary_rows if row["trust_status"] != UNSUPPORTED_EXTRAPOLATION and "lut_budget_shared_lut_min" in row],
+        key=lambda row: row["mac_units"],
+    )
+    fig, ax = plt.subplots(figsize=(7.6, 4.6))
+    xs = [row["mac_units"] for row in supported_boundary_rows]
+    shared_lut = [row["lut_budget_shared_lut_min"] for row in supported_boundary_rows]
+    baseline_lut = [row["lut_budget_baseline_min"] for row in supported_boundary_rows]
+    ax.plot(xs, shared_lut, color=_variant_color("shared_lut_saving"), linewidth=2.0, label="shared_lut_saving LUT floor")
+    ax.plot(xs, baseline_lut, color=_variant_color("baseline"), linewidth=2.0, label="baseline LUT floor")
+    ax.fill_between(xs, shared_lut, baseline_lut, color="#9fd8b7", alpha=0.35, label="shared_lut_saving justified window")
+    ax.set_xlabel("MAC units")
+    ax.set_ylabel("LUT budget")
+    ax.set_title("LUT-Pressure Decision Boundary")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    path = output_dir / "lut_pressure_decision_boundary.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    generated.append(str(path))
+
+    fig, axes = plt.subplots(2, 1, figsize=(7.6, 7.0), sharex=True)
+    baseline_dsp = [row["dsp_budget_baseline_min"] for row in supported_boundary_rows]
+    shared_dsp = [row["dsp_budget_shared_dsp_min"] for row in supported_boundary_rows]
+    shared_dsp_lut_floor = [row["shared_dsp_lut_floor"] for row in supported_boundary_rows]
+    axes[0].plot(xs, shared_dsp, color=_variant_color("shared_dsp_reducing"), linewidth=2.0, label="shared_dsp_reducing DSP floor")
+    axes[0].plot(xs, baseline_dsp, color=_variant_color("baseline"), linewidth=2.0, label="baseline DSP floor")
+    axes[0].fill_between(xs, shared_dsp, baseline_dsp, color="#f2c49b", alpha=0.35, label="shared_dsp_reducing justified window")
+    axes[0].set_ylabel("DSP budget")
+    axes[0].set_title("DSP-Pressure Decision Boundary")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend()
+    axes[1].plot(xs, shared_dsp_lut_floor, color=_variant_color("shared_dsp_reducing"), linewidth=2.0)
+    axes[1].set_xlabel("MAC units")
+    axes[1].set_ylabel("Required LUT budget")
+    axes[1].set_title("LUT Floor Needed to Admit shared_dsp_reducing")
+    axes[1].grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = output_dir / "dsp_pressure_decision_boundary.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    generated.append(str(path))
+
+    fig, ax = plt.subplots(figsize=(7.2, 2.8))
+    ax.axvspan(min(xs), max(xs), color="#d8d8d8", alpha=0.65)
+    ax.set_xlim(min(xs), max(xs))
+    ax.set_ylim(0, 1)
+    ax.set_yticks([])
+    ax.set_xlabel("MAC units")
+    ax.set_title("Timing-Sensitive Architecture Choice: Unsupported for Interpolation")
+    ax.text((min(xs) + max(xs)) / 2.0, 0.5, "WNS is caution-only;\nuse measured grid lookup, not a smooth boundary.", ha="center", va="center")
+    fig.tight_layout()
+    path = output_dir / "timing_sensitive_unsupported.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    generated.append(str(path))
+    return generated
 
 
 def render_direct_calibration_plot(output_path: Path, rows: list[dict[str, Any]]) -> str | None:

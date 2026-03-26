@@ -18,7 +18,7 @@ VERILATOR_FLAGS := -sv -Wall -Wno-fatal --trace \
 ARGS            ?=
 
 # -------- Phony targets --------
-.PHONY: all build run run_full run_batch run_batch_vcd fpga_experiments fpga_experiments_sweep fpga_experiments_parallel fpga_queue_preview fpga_summary fpga_plots fpga_framework_v2 fpga_refresh_preview fpga_refresh_execute fpga_mac_direct_preview fpga_mac_direct_tradeoff_preview fpga_mac_direct_shared_dsp_preview fpga_mac_direct_shared_lut_8x4_preview fpga_mac_direct_shared_dsp_8x4_preview fpga_mac_direct_shared_lut_8x8_preview fpga_mac_direct_shared_dsp_8x8_preview fpga_mac_direct_4x4 fpga_mac_direct_tradeoff_4x4 fpga_mac_direct_shared_dsp_4x4 fpga_mac_direct_8x4 fpga_mac_direct_shared_lut_8x4 fpga_mac_direct_shared_dsp_8x4 fpga_mac_direct_8x8 fpga_mac_direct_shared_lut_8x8 fpga_mac_direct_shared_dsp_8x8 fpga_mac_direct_report test clean realclean help
+.PHONY: all build run run_full run_batch run_batch_vcd fpga_experiments fpga_experiments_sweep fpga_experiments_parallel fpga_queue_preview fpga_summary fpga_plots fpga_framework_v2 fpga_refresh_preview fpga_refresh_execute fpga_mac_direct_preview fpga_mac_direct_tradeoff_preview fpga_mac_direct_shared_dsp_preview fpga_mac_direct_shared_lut_8x4_preview fpga_mac_direct_shared_dsp_8x4_preview fpga_mac_direct_shared_lut_8x8_preview fpga_mac_direct_shared_dsp_8x8_preview fpga_mac_direct_4x4 fpga_mac_direct_tradeoff_4x4 fpga_mac_direct_shared_dsp_4x4 fpga_mac_direct_8x4 fpga_mac_direct_shared_lut_8x4 fpga_mac_direct_shared_dsp_8x4 fpga_mac_direct_8x8 fpga_mac_direct_shared_lut_8x8 fpga_mac_direct_shared_dsp_8x8 fpga_mac_direct_report fpga_mac_direct_final_pack test clean realclean help
 
 all: run
 
@@ -123,6 +123,10 @@ fpga_mac_direct_shared_dsp_8x8:
 fpga_mac_direct_report:
 	python3 analysis/run_mac_array_direct_slice.py
 
+fpga_mac_direct_final_pack:
+	python3 analysis/run_mac_array_direct_slice.py
+	python3 analysis/run_mac_array_framework.py --config experiments/configs/mac_array_framework_v2.json
+
 fpga_refresh_preview:
 	python3 experiments/run_measured_refresh.py --preview-scheduler $(SCHED_ARGS)
 
@@ -169,6 +173,7 @@ help:
 	@echo "  make fpga_mac_direct_shared_dsp_8x8_preview - preview the directly measurable 8x8 DSP-oriented shared point"
 	@echo "  make fpga_mac_direct_shared_dsp_8x8 - run the directly measurable 8x8 DSP-oriented shared point"
 	@echo "  make fpga_mac_direct_report  - generate direct measured-vs-modelled slice artifacts"
+	@echo "  make fpga_mac_direct_final_pack - regenerate the full thesis-ready direct-slice family results pack"
 	@echo "  make fpga_refresh_preview   - build selective measured-refresh artifacts and preview the runnable queue"
 	@echo "  make fpga_refresh_execute   - run the selective measured-refresh queue with the same scheduler knobs"
 	@echo "  make test                   - run deterministic Python unit tests"

@@ -309,6 +309,14 @@ The measured utility rule is now explicit too: these shared implementations are 
 
 The measured design-rule conclusion is now explicit: flexibility introduces fixed overhead in latency and throughput, so it should be selected for bottleneck relief rather than for abstract architectural elegance. If no hard LUT or DSP bottleneck dominates, baseline remains preferable.
 
+Regenerate the full thesis-ready direct-slice family pack with:
+
+```bash
+make fpga_mac_direct_final_pack
+```
+
+The reproducibility notes for that frozen pack live in [`docs/direct-slice-final-results-repro.md`](/home/keelan/CNN_FPGA/docs/direct-slice-final-results-repro.md).
+
 Generated direct-slice artifacts land under `results/fpga/framework_v2/direct_slice/`, including:
 
 - `direct_measured_vs_modelled.csv/json`
@@ -333,6 +341,16 @@ Generated direct-slice artifacts land under `results/fpga/framework_v2/direct_sl
 - `measured_tradeoff_decision_table.csv/json`
 - `measured_tradeoff_regime_summary.md`
 - `measured_design_rules.md`
+- `final_tradeoff_figures/`
+- `final_predictor_validation_figures/`
+- `final_decision_surface_figures/`
+- `final_design_rule_table.csv/json/md`
+- `final_trust_calibration_table.csv/json/md`
+- `final_architecture_choice_boundary_table.csv/json/md`
+- `final_artifact_index.csv/json/md`
+- `final_results_summary.md/json`
+- `final_reproducibility_guide.md/json`
+- `final_results_pack_manifest.json`
 
 ### Selective measured refresh
 

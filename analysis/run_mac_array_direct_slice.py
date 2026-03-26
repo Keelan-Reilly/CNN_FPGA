@@ -23,6 +23,12 @@ try:
         build_measured_budget_boundary_rows,
         build_measured_regime_transfer_summary,
         build_measured_supported_region_map,
+        build_final_architecture_choice_boundary_table,
+        build_final_artifact_index,
+        build_final_design_rule_table,
+        build_final_reproducibility_guide,
+        build_final_results_summary,
+        build_final_trust_calibration_table,
         build_measured_design_rule_summary,
         build_measured_extrapolation_boundary_summary,
         build_measured_fit_residual_rows,
@@ -46,6 +52,12 @@ try:
         render_measured_design_rule_extraction_summary,
         render_measured_regime_transfer_summary,
         render_measured_supported_region_map,
+        render_final_results_summary,
+        render_final_reproducibility_guide,
+        render_final_table_markdown,
+        render_final_tradeoff_figures,
+        render_final_predictor_validation_figures,
+        render_final_decision_surface_figures,
         render_measured_utility_summary,
         render_measured_extrapolation_boundary,
         render_measured_predictor_summary,
@@ -71,6 +83,12 @@ except ImportError:
         build_measured_budget_boundary_rows,
         build_measured_regime_transfer_summary,
         build_measured_supported_region_map,
+        build_final_architecture_choice_boundary_table,
+        build_final_artifact_index,
+        build_final_design_rule_table,
+        build_final_reproducibility_guide,
+        build_final_results_summary,
+        build_final_trust_calibration_table,
         build_measured_design_rule_summary,
         build_measured_extrapolation_boundary_summary,
         build_measured_fit_residual_rows,
@@ -94,6 +112,12 @@ except ImportError:
         render_measured_design_rule_extraction_summary,
         render_measured_regime_transfer_summary,
         render_measured_supported_region_map,
+        render_final_results_summary,
+        render_final_reproducibility_guide,
+        render_final_table_markdown,
+        render_final_tradeoff_figures,
+        render_final_predictor_validation_figures,
+        render_final_decision_surface_figures,
         render_measured_utility_summary,
         render_measured_extrapolation_boundary,
         render_measured_predictor_summary,
@@ -147,6 +171,29 @@ def main() -> int:
         predictor_rows,
     )
     supported_region_map = build_measured_supported_region_map(decision_surface_rows, budget_boundary_rows)
+    final_design_rule_rows = build_final_design_rule_table(
+        tradeoff_rows,
+        flexibility_justification_rows,
+        scaling_summary,
+    )
+    final_trust_calibration_rows = build_final_trust_calibration_table(
+        support_rows,
+        calibration_overlay_rows,
+        predictor_rows,
+        extrapolation_boundary,
+    )
+    final_architecture_choice_boundary_rows = build_final_architecture_choice_boundary_table(
+        budget_boundary_rows,
+        regime_transfer_summary,
+    )
+    final_results_summary = build_final_results_summary(
+        final_design_rule_rows,
+        final_trust_calibration_rows,
+        final_architecture_choice_boundary_rows,
+        regime_transfer_summary,
+    )
+    final_artifact_index_rows = build_final_artifact_index(output_dir, final_results_summary)
+    final_reproducibility_guide = build_final_reproducibility_guide(final_results_summary)
     decision_rows = build_measured_tradeoff_decision_rows(tradeoff_rows)
     design_rule_summary = build_measured_design_rule_summary(tradeoff_rows, decision_rows)
     write_csv(output_dir / "direct_measured_vs_modelled.csv", rows)
@@ -190,6 +237,16 @@ def main() -> int:
     write_json(output_dir / "measured_budget_boundary_table.json", budget_boundary_rows)
     write_json(output_dir / "measured_regime_transfer_summary.json", regime_transfer_summary)
     write_json(output_dir / "measured_supported_region_map.json", supported_region_map)
+    write_csv(output_dir / "final_design_rule_table.csv", final_design_rule_rows)
+    write_json(output_dir / "final_design_rule_table.json", final_design_rule_rows)
+    write_csv(output_dir / "final_trust_calibration_table.csv", final_trust_calibration_rows)
+    write_json(output_dir / "final_trust_calibration_table.json", final_trust_calibration_rows)
+    write_csv(output_dir / "final_architecture_choice_boundary_table.csv", final_architecture_choice_boundary_rows)
+    write_json(output_dir / "final_architecture_choice_boundary_table.json", final_architecture_choice_boundary_rows)
+    write_json(output_dir / "final_results_summary.json", final_results_summary)
+    write_csv(output_dir / "final_artifact_index.csv", final_artifact_index_rows)
+    write_json(output_dir / "final_artifact_index.json", final_artifact_index_rows)
+    write_json(output_dir / "final_reproducibility_guide.json", final_reproducibility_guide)
     write_csv(output_dir / "measured_tradeoff_decision_table.csv", decision_rows)
     write_json(output_dir / "measured_tradeoff_decision_table.json", decision_rows)
     write_json(output_dir / "measured_design_rule_summary.json", design_rule_summary)
@@ -217,10 +274,54 @@ def main() -> int:
         output_dir / "measured_supported_region_map.md",
         supported_region_map,
     )
+    render_final_results_summary(output_dir / "final_results_summary.md", final_results_summary)
+    render_final_table_markdown(output_dir / "final_artifact_index.md", "Final Artifact Index", final_artifact_index_rows)
+    render_final_table_markdown(output_dir / "final_design_rule_table.md", "Final Design Rule Table", final_design_rule_rows)
+    render_final_table_markdown(output_dir / "final_trust_calibration_table.md", "Final Trust Calibration Table", final_trust_calibration_rows)
+    render_final_table_markdown(
+        output_dir / "final_architecture_choice_boundary_table.md",
+        "Final Architecture Choice Boundary Table",
+        final_architecture_choice_boundary_rows,
+    )
+    render_final_reproducibility_guide(
+        output_dir / "final_reproducibility_guide.md",
+        final_reproducibility_guide,
+        final_artifact_index_rows,
+    )
     render_measured_tradeoff_regime_summary(output_dir / "measured_tradeoff_regime_summary.md", decision_rows)
     render_measured_design_rules(output_dir / "measured_design_rules.md", design_rule_summary)
     plot_path = render_direct_calibration_plot(output_dir / "direct_calibration_plot.png", rows)
     write_json(output_dir / "direct_generated_plot.json", plot_path)
+    final_tradeoff_figures = render_final_tradeoff_figures(output_dir / "final_tradeoff_figures", rows)
+    final_predictor_figures = render_final_predictor_validation_figures(
+        output_dir / "final_predictor_validation_figures",
+        rows,
+        predictor_rows,
+        predictor_residual_rows,
+    )
+    final_decision_figures = render_final_decision_surface_figures(
+        output_dir / "final_decision_surface_figures",
+        decision_surface_rows,
+        budget_boundary_rows,
+    )
+    write_json(
+        output_dir / "final_results_pack_manifest.json",
+        {
+            "final_tradeoff_figures": final_tradeoff_figures,
+            "final_predictor_validation_figures": final_predictor_figures,
+            "final_decision_surface_figures": final_decision_figures,
+            "final_tables": [
+                "final_design_rule_table.csv/json/md",
+                "final_trust_calibration_table.csv/json/md",
+                "final_architecture_choice_boundary_table.csv/json/md",
+                "final_artifact_index.csv/json/md",
+            ],
+            "final_summary": "final_results_summary.md/json",
+            "final_reproducibility_guide": "final_reproducibility_guide.md/json",
+            "validated_domain": final_reproducibility_guide["validated_domain"],
+            "regeneration_command": final_reproducibility_guide["regeneration_command"],
+        },
+    )
     print(f"Wrote direct-slice outputs to {output_dir}")
     return 0
 
