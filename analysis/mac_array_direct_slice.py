@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+from math import sqrt
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,8 @@ DIRECT_AGGREGATE_NAMES = [
     "study_mac_array_direct_shared_dsp_4x4.json",
     "study_mac_array_direct_shared_lut_8x4.json",
     "study_mac_array_direct_shared_dsp_8x4.json",
+    "study_mac_array_direct_shared_lut_8x8.json",
+    "study_mac_array_direct_shared_dsp_8x8.json",
 ]
 FRAMEWORK_CONFIG = REPO_ROOT / "experiments" / "configs" / "mac_array_framework_v2.json"
 ARCH_MODE_BASELINE = 0
@@ -55,6 +58,13 @@ FLEXIBILITY_JUSTIFIED_LUT = "justified_only_for_lut_dominant_relief"
 FLEXIBILITY_JUSTIFIED_DSP = "justified_only_for_dsp_dominant_relief"
 FLEXIBILITY_NOT_JUSTIFIED_PERFORMANCE = "not_justified_when_performance_dominates"
 FLEXIBILITY_BASELINE_PREFERRED = "baseline_preferred_without_hard_resource_bottleneck"
+PREDICTOR_EXACT = "exact_validated_formula"
+PREDICTOR_LINEAR = "local_linear_fit"
+PREDICTOR_CONSTANT = "measured_constant_fit"
+PREDICTOR_UNSTABLE = "too_unstable_for_trusted_prediction"
+MEASURED_LATTICE_POINT = "measured_lattice_point"
+INTERPOLATED_WITHIN_MEASURED_DOMAIN = "interpolated_within_measured_domain"
+UNSUPPORTED_EXTRAPOLATION = "unsupported_extrapolation"
 
 
 def _round_or_none(value: float | None, digits: int = 6) -> float | None:
@@ -282,6 +292,600 @@ def build_direct_calibration_summary(rows: list[dict[str, Any]]) -> dict[str, An
                 "usage_note": "Use as a baseline-only calibration aid or caution reference; do not silently replace the global framework model.",
             }
     return summary
+
+
+def _fit_constant(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / float(len(values))
+
+
+def _variant_predictor_domain(rows: list[dict[str, Any]]) -> tuple[int, int]:
+    mac_units = sorted(int(row["mac_units"]) for row in rows)
+    return mac_units[0], mac_units[-1]
+
+
+def _predictor_confidence_status(metric: str, max_abs_residual: float, max_abs_relative_residual_pct: float | None) -> str:
+    if metric in {"dsp", "latency_cycles", "effective_throughput_ops_per_cycle"} and max_abs_residual <= 1e-6:
+        return "high_within_measured_domain"
+    if metric in {"lut", "ff"}:
+        if max_abs_relative_residual_pct is not None and max_abs_relative_residual_pct <= 2.0:
+            return "moderate_local_predictor"
+        if max_abs_relative_residual_pct is not None and max_abs_relative_residual_pct <= 5.0:
+            return "cautionary_local_predictor"
+        return "low_confidence_local_predictor"
+    if metric == "wns_ns":
+        if max_abs_residual <= 0.15:
+            return "cautionary_local_predictor"
+        return "low_confidence_local_predictor"
+    return "cautionary_local_predictor"
+
+
+def _build_predictor_row(
+    architecture_variant: str,
+    metric: str,
+    predictor_kind: str,
+    predictor_formula: str,
+    measured_rows: list[dict[str, Any]],
+    predict_fn: Any,
+    fit_status: str | None = None,
+    confidence_status: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    domain_min, domain_max = _variant_predictor_domain(measured_rows)
+    residual_rows: list[dict[str, Any]] = []
+    abs_residuals: list[float] = []
+    relative_residuals: list[float] = []
+    for row in measured_rows:
+        measured_value = float(row[f"measured_{metric}"])
+        predicted_value = float(predict_fn(row))
+        residual = round(measured_value - predicted_value, 6)
+        abs_residual = abs(residual)
+        abs_residuals.append(abs_residual)
+        rel = None
+        if measured_value != 0:
+            rel = round((abs_residual / abs(measured_value)) * 100.0, 6)
+            relative_residuals.append(rel)
+        residual_rows.append(
+            {
+                "architecture_variant": architecture_variant,
+                "metric": metric,
+                "grid": row["grid"],
+                "mac_units": row["mac_units"],
+                "k_depth": row["k_depth"],
+                "measured_value": measured_value,
+                "predicted_value": round(predicted_value, 6),
+                "residual": residual,
+                "abs_residual": round(abs_residual, 6),
+                "abs_relative_residual_pct": rel,
+            }
+        )
+
+    max_abs_residual = round(max(abs_residuals), 6) if abs_residuals else None
+    rms_residual = round(sqrt(sum(value * value for value in abs_residuals) / len(abs_residuals)), 6) if abs_residuals else None
+    max_abs_relative_residual_pct = round(max(relative_residuals), 6) if relative_residuals else None
+    fit_status = fit_status or (PREDICTOR_EXACT if max_abs_residual == 0 else predictor_kind)
+    if metric == "wns_ns" and max_abs_residual is not None and max_abs_residual > 0.15:
+        fit_status = PREDICTOR_UNSTABLE
+    confidence_status = confidence_status or _predictor_confidence_status(metric, max_abs_residual or 0.0, max_abs_relative_residual_pct)
+
+    predictor_row = {
+        "architecture_variant": architecture_variant,
+        "metric": metric,
+        "predictor_kind": predictor_kind,
+        "predictor_formula": predictor_formula,
+        "fit_status": fit_status,
+        "confidence_status": confidence_status,
+        "measured_point_count": len(measured_rows),
+        "interpolation_domain_mac_units_min": domain_min,
+        "interpolation_domain_mac_units_max": domain_max,
+        "interpolation_domain_k_depth_min": min(int(row["k_depth"]) for row in measured_rows),
+        "interpolation_domain_k_depth_max": max(int(row["k_depth"]) for row in measured_rows),
+        "max_abs_residual": max_abs_residual,
+        "rms_residual": rms_residual,
+        "max_abs_relative_residual_pct": max_abs_relative_residual_pct,
+        "extrapolation_warning": (
+            f"Use only for interpolation over {domain_min} <= mac_units <= {domain_max} at the currently measured k-depth range; outside that domain treat predictions as unvalidated extrapolation."
+        ),
+    }
+    return predictor_row, residual_rows
+
+
+def build_measured_predictor_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    measured_rows = [row for row in rows if row["comparison_status"] == "direct_measured_vs_modelled"]
+    if not measured_rows:
+        return []
+
+    predictor_rows: list[dict[str, Any]] = []
+    residual_rows: list[dict[str, Any]] = []
+    by_variant: dict[str, list[dict[str, Any]]] = {}
+    for row in measured_rows:
+        by_variant.setdefault(row["architecture"], []).append(row)
+
+    for architecture_variant, variant_rows in sorted(by_variant.items(), key=lambda item: (0 if item[0] == "baseline" else 1 if item[0] == "shared_lut_saving" else 2, item[0])):
+        variant_rows = sorted(variant_rows, key=lambda item: item["mac_units"])
+        linear_metrics = {
+            "lut": [float(row["measured_lut"]) for row in variant_rows if row["measured_lut"] is not None],
+            "ff": [float(row["measured_ff"]) for row in variant_rows if row["measured_ff"] is not None],
+            "wns_ns": [float(row["measured_wns_ns"]) for row in variant_rows if row["measured_wns_ns"] is not None],
+        }
+        mac_units = [float(row["mac_units"]) for row in variant_rows]
+
+        if architecture_variant == "baseline":
+            exact_specs = [
+                ("dsp", PREDICTOR_LINEAR, "dsp = mac_units", lambda row: float(row["mac_units"])),
+                ("latency_cycles", PREDICTOR_EXACT, "latency_cycles = k_depth + 1", lambda row: float(row["k_depth"] + 1)),
+                ("effective_throughput_ops_per_cycle", PREDICTOR_EXACT, "throughput = mac_units * k_depth / (k_depth + 1)", lambda row: float(row["mac_units"] * row["k_depth"]) / float(row["k_depth"] + 1)),
+            ]
+        elif architecture_variant == "shared_lut_saving":
+            exact_specs = [
+                ("dsp", PREDICTOR_LINEAR, "dsp = mac_units", lambda row: float(row["mac_units"])),
+                ("latency_cycles", PREDICTOR_EXACT, "latency_cycles = 2 * k_depth + 1", lambda row: float((2 * row["k_depth"]) + 1)),
+                ("effective_throughput_ops_per_cycle", PREDICTOR_EXACT, "throughput = mac_units * k_depth / (2 * k_depth + 1)", lambda row: float(row["mac_units"] * row["k_depth"]) / float((2 * row["k_depth"]) + 1)),
+            ]
+        else:
+            exact_specs = [
+                ("dsp", PREDICTOR_CONSTANT, "dsp = 0", lambda row: 0.0),
+                ("latency_cycles", PREDICTOR_EXACT, "latency_cycles = 2 * k_depth + 1", lambda row: float((2 * row["k_depth"]) + 1)),
+                ("effective_throughput_ops_per_cycle", PREDICTOR_EXACT, "throughput = mac_units * k_depth / (2 * k_depth + 1)", lambda row: float(row["mac_units"] * row["k_depth"]) / float((2 * row["k_depth"]) + 1)),
+            ]
+        for metric, predictor_kind, formula, predict_fn in exact_specs:
+            predictor_row, current_residuals = _build_predictor_row(architecture_variant, metric, predictor_kind, formula, variant_rows, predict_fn)
+            predictor_rows.append(predictor_row)
+            residual_rows.extend(current_residuals)
+
+        for metric, ys in linear_metrics.items():
+            fit = _fit_linear(mac_units, ys)
+            if fit is None:
+                continue
+            intercept, slope = fit
+            formula = f"{metric} = {round(intercept, 6)} + {round(slope, 6)} * mac_units"
+            predictor_row, current_residuals = _build_predictor_row(
+                architecture_variant,
+                metric,
+                PREDICTOR_LINEAR,
+                formula,
+                variant_rows,
+                lambda row, _intercept=intercept, _slope=slope: _intercept + (_slope * float(row["mac_units"])),
+            )
+            predictor_rows.append(predictor_row)
+            residual_rows.extend(current_residuals)
+
+    predictor_rows.sort(key=lambda row: (row["architecture_variant"], row["metric"]))
+    return predictor_rows
+
+
+def build_measured_fit_residual_rows(rows: list[dict[str, Any]], predictor_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    measured_rows = [row for row in rows if row["comparison_status"] == "direct_measured_vs_modelled"]
+    if not measured_rows or not predictor_rows:
+        return []
+    by_variant: dict[str, list[dict[str, Any]]] = {}
+    for row in measured_rows:
+        by_variant.setdefault(row["architecture"], []).append(row)
+
+    residual_rows: list[dict[str, Any]] = []
+    for predictor_row in predictor_rows:
+        architecture_variant = predictor_row["architecture_variant"]
+        metric = predictor_row["metric"]
+        variant_rows = sorted(by_variant[architecture_variant], key=lambda item: item["mac_units"])
+        formula = predictor_row["predictor_formula"]
+        if formula == "dsp = mac_units":
+            predict_fn = lambda row: float(row["mac_units"])
+        elif formula == "dsp = 0":
+            predict_fn = lambda row: 0.0
+        elif formula == "latency_cycles = k_depth + 1":
+            predict_fn = lambda row: float(row["k_depth"] + 1)
+        elif formula == "latency_cycles = 2 * k_depth + 1":
+            predict_fn = lambda row: float((2 * row["k_depth"]) + 1)
+        elif formula == "throughput = mac_units * k_depth / (k_depth + 1)":
+            predict_fn = lambda row: float(row["mac_units"] * row["k_depth"]) / float(row["k_depth"] + 1)
+        elif formula == "throughput = mac_units * k_depth / (2 * k_depth + 1)":
+            predict_fn = lambda row: float(row["mac_units"] * row["k_depth"]) / float((2 * row["k_depth"]) + 1)
+        else:
+            _, rhs = formula.split("=", 1)
+            intercept_str, slope_part = rhs.strip().split("+", 1)
+            slope_str = slope_part.strip().split("*", 1)[0].strip()
+            intercept = float(intercept_str.strip())
+            slope = float(slope_str)
+            predict_fn = lambda row, _intercept=intercept, _slope=slope: _intercept + (_slope * float(row["mac_units"]))
+        _, current_residuals = _build_predictor_row(
+            architecture_variant,
+            metric,
+            predictor_row["predictor_kind"],
+            predictor_row["predictor_formula"],
+            variant_rows,
+            predict_fn,
+            fit_status=predictor_row["fit_status"],
+            confidence_status=predictor_row["confidence_status"],
+        )
+        residual_rows.extend(current_residuals)
+    residual_rows.sort(key=lambda row: (row["architecture_variant"], row["metric"], row["mac_units"]))
+    return residual_rows
+
+
+def build_measured_predictor_summary(predictor_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not predictor_rows:
+        return {}
+    by_metric: dict[str, list[dict[str, Any]]] = {}
+    for row in predictor_rows:
+        by_metric.setdefault(row["metric"], []).append(row)
+    exact_metrics = sorted(
+        metric for metric, rows in by_metric.items() if all(item["fit_status"] == PREDICTOR_EXACT or (metric == "dsp" and item["max_abs_residual"] == 0) for item in rows)
+    )
+    unstable_metrics = sorted(
+        metric for metric, rows in by_metric.items() if any(item["fit_status"] == PREDICTOR_UNSTABLE for item in rows)
+    )
+    domain_min = min(row["interpolation_domain_mac_units_min"] for row in predictor_rows)
+    domain_max = max(row["interpolation_domain_mac_units_max"] for row in predictor_rows)
+    summary_lines = [
+        f"Within the measured direct-slice domain {domain_min} <= mac_units <= {domain_max} at k_depth=32, DSP, latency, and throughput are well fit by simple transparent local predictors.",
+        "LUT and FF admit compact local linear predictors over the measured range, with residuals that should still be treated as interpolation-only aids rather than global architecture models.",
+        "WNS remains the least stable metric; use the local predictor only as a cautionary interpolation aid and avoid trusting it for extrapolation.",
+        "The measured direct slice shows shared flexibility overhead as approximately fixed in schedule terms: shared variants keep the 65-cycle schedule while baseline keeps the 33-cycle schedule.",
+        "Within the measured domain, the direct-slice predictor can replace lightweight direct-slice expectations for local architecture-variant metrics, but it does not replace broader shared-family modelled expectations.",
+    ]
+    if unstable_metrics:
+        summary_lines.append(f"The least trustworthy local predictor metric is: {', '.join(unstable_metrics)}.")
+    return {
+        "headline": "This summary turns the measured direct-slice lattice into a compact local predictor with residuals and explicit trust boundaries.",
+        "summary_lines": summary_lines,
+        "exact_metrics": exact_metrics,
+        "unstable_metrics": unstable_metrics,
+        "predictor_row_count": len(predictor_rows),
+        "interpolation_domain_mac_units_min": domain_min,
+        "interpolation_domain_mac_units_max": domain_max,
+    }
+
+
+def build_measured_extrapolation_boundary_summary(predictor_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not predictor_rows:
+        return {}
+    domain_min = min(row["interpolation_domain_mac_units_min"] for row in predictor_rows)
+    domain_max = max(row["interpolation_domain_mac_units_max"] for row in predictor_rows)
+    return {
+        "headline": "This summary marks where local measured prediction ends and extrapolation begins for the isolated direct-slice architecture family.",
+        "summary_lines": [
+            f"Interpolation is bounded to the measured direct-slice lattice over {domain_min} <= mac_units <= {domain_max} at k_depth=32.",
+            "Predictions inside that domain are local direct-slice interpolation aids only; they should not be promoted to full shared-family architecture truths.",
+            "Any use outside the measured mac-unit domain should be treated as unvalidated extrapolation with low trust, especially for WNS and implementation-dependent resource metrics.",
+            "The measured local predictor is appropriate for the isolated baseline/shared_lut_saving/shared_dsp_reducing slice family only.",
+        ],
+        "interpolation_domain_mac_units_min": domain_min,
+        "interpolation_domain_mac_units_max": domain_max,
+        "supported_variants": sorted({row["architecture_variant"] for row in predictor_rows}),
+    }
+
+
+def _predict_from_formula(formula: str, mac_units: int, k_depth: int) -> float:
+    if formula == "dsp = mac_units":
+        return float(mac_units)
+    if formula == "dsp = 0":
+        return 0.0
+    if formula == "latency_cycles = k_depth + 1":
+        return float(k_depth + 1)
+    if formula == "latency_cycles = 2 * k_depth + 1":
+        return float((2 * k_depth) + 1)
+    if formula == "throughput = mac_units * k_depth / (k_depth + 1)":
+        return float(mac_units * k_depth) / float(k_depth + 1)
+    if formula == "throughput = mac_units * k_depth / (2 * k_depth + 1)":
+        return float(mac_units * k_depth) / float((2 * k_depth) + 1)
+    _, rhs = formula.split("=", 1)
+    intercept_str, slope_part = rhs.strip().split("+", 1)
+    slope_str = slope_part.strip().split("*", 1)[0].strip()
+    intercept = float(intercept_str.strip())
+    slope = float(slope_str)
+    return intercept + (slope * float(mac_units))
+
+
+def _trust_status_for_mac_units(mac_units: int, domain_min: int, domain_max: int, measured_mac_units: set[int]) -> str:
+    if mac_units < domain_min or mac_units > domain_max:
+        return UNSUPPORTED_EXTRAPOLATION
+    if mac_units in measured_mac_units:
+        return MEASURED_LATTICE_POINT
+    return INTERPOLATED_WITHIN_MEASURED_DOMAIN
+
+
+def _predict_metric(
+    predictor_lookup: dict[tuple[str, str], dict[str, Any]],
+    architecture_variant: str,
+    metric: str,
+    mac_units: int,
+    k_depth: int,
+) -> float:
+    row = predictor_lookup[(architecture_variant, metric)]
+    return _predict_from_formula(row["predictor_formula"], mac_units, k_depth)
+
+
+def build_measured_budget_boundary_rows(predictor_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not predictor_rows:
+        return []
+    predictor_lookup = {(row["architecture_variant"], row["metric"]): row for row in predictor_rows}
+    domain_min = min(row["interpolation_domain_mac_units_min"] for row in predictor_rows)
+    domain_max = max(row["interpolation_domain_mac_units_max"] for row in predictor_rows)
+    k_depth = min(row["interpolation_domain_k_depth_min"] for row in predictor_rows)
+    measured_mac_units = sorted(
+        {
+            row["interpolation_domain_mac_units_min"]
+            for row in predictor_rows
+            if row["interpolation_domain_mac_units_min"] == row["interpolation_domain_mac_units_max"]
+        }
+    )
+    if not measured_mac_units:
+        measured_mac_units = [16, 32, 64]
+
+    rows: list[dict[str, Any]] = []
+    for mac_units in range(domain_min, domain_max + 1):
+        trust_status = _trust_status_for_mac_units(mac_units, domain_min, domain_max, set(measured_mac_units))
+        baseline_lut = _predict_metric(predictor_lookup, "baseline", "lut", mac_units, k_depth)
+        shared_lut = _predict_metric(predictor_lookup, "shared_lut_saving", "lut", mac_units, k_depth)
+        baseline_dsp = _predict_metric(predictor_lookup, "baseline", "dsp", mac_units, k_depth)
+        shared_dsp = _predict_metric(predictor_lookup, "shared_dsp_reducing", "dsp", mac_units, k_depth)
+        baseline_latency = _predict_metric(predictor_lookup, "baseline", "latency_cycles", mac_units, k_depth)
+        shared_latency = _predict_metric(predictor_lookup, "shared_lut_saving", "latency_cycles", mac_units, k_depth)
+        baseline_throughput = _predict_metric(
+            predictor_lookup, "baseline", "effective_throughput_ops_per_cycle", mac_units, k_depth
+        )
+        shared_throughput = _predict_metric(
+            predictor_lookup, "shared_lut_saving", "effective_throughput_ops_per_cycle", mac_units, k_depth
+        )
+        shared_dsp_lut = _predict_metric(predictor_lookup, "shared_dsp_reducing", "lut", mac_units, k_depth)
+        rows.append(
+            {
+                "mac_units": mac_units,
+                "k_depth": k_depth,
+                "trust_status": trust_status,
+                "lut_budget_shared_lut_min": round(shared_lut, 6),
+                "lut_budget_baseline_min": round(baseline_lut, 6),
+                "lut_budget_window_kind": "shared_lut_saving_justified_when_budget_is_between_shared_and_baseline",
+                "dsp_budget_shared_dsp_min": round(shared_dsp, 6),
+                "dsp_budget_baseline_min": round(baseline_dsp, 6),
+                "dsp_budget_window_kind": "shared_dsp_reducing_justified_when_budget_is_below_baseline_dsp_floor",
+                "shared_dsp_lut_floor": round(shared_dsp_lut, 6),
+                "shared_throughput_floor_ops_per_cycle": round(shared_throughput, 6),
+                "baseline_throughput_floor_ops_per_cycle": round(baseline_throughput, 6),
+                "shared_latency_ceiling_cycles": round(shared_latency, 6),
+                "baseline_latency_ceiling_cycles": round(baseline_latency, 6),
+                "boundary_reading": (
+                    f"At {mac_units} mac units, shared_lut_saving becomes worthwhile only if LUT budget falls below `{round(baseline_lut, 3)}` but still admits `{round(shared_lut, 3)}`, while shared_dsp_reducing only matters if DSP budget falls below `{round(baseline_dsp, 3)}` and the design can still absorb about `{round(shared_dsp_lut, 3)}` LUT."
+                ),
+                "extrapolation_warning": (
+                    "This boundary row is safe only inside the measured direct-slice interpolation domain."
+                    if trust_status != UNSUPPORTED_EXTRAPOLATION
+                    else "This row is outside the measured domain and should not be used for architecture choice."
+                ),
+            }
+        )
+    for mac_units, boundary_side in ((domain_min - 1, "below_measured_domain"), (domain_max + 1, "above_measured_domain")):
+        rows.append(
+            {
+                "mac_units": mac_units,
+                "k_depth": k_depth,
+                "trust_status": UNSUPPORTED_EXTRAPOLATION,
+                "boundary_side": boundary_side,
+                "boundary_reading": "Outside the measured direct-slice domain, the repo should refuse to claim a predictor-backed choice boundary.",
+                "extrapolation_warning": "Unsupported extrapolation beyond the validated direct-slice predictor domain.",
+            }
+        )
+    return rows
+
+
+def build_measured_decision_surface(
+    predictor_rows: list[dict[str, Any]],
+    utility_rows: list[dict[str, Any]],
+    bottleneck_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not predictor_rows or not utility_rows or not bottleneck_rows:
+        return []
+    predictor_lookup = {(row["architecture_variant"], row["metric"]): row for row in predictor_rows}
+    domain_min = min(row["interpolation_domain_mac_units_min"] for row in predictor_rows)
+    domain_max = max(row["interpolation_domain_mac_units_max"] for row in predictor_rows)
+    k_depth = min(row["interpolation_domain_k_depth_min"] for row in predictor_rows)
+    measured_mac_units = {16, 32, 64}
+
+    rows: list[dict[str, Any]] = []
+    for mac_units in range(domain_min, domain_max + 1):
+        trust_status = _trust_status_for_mac_units(mac_units, domain_min, domain_max, measured_mac_units)
+        baseline_lut = _predict_metric(predictor_lookup, "baseline", "lut", mac_units, k_depth)
+        shared_lut = _predict_metric(predictor_lookup, "shared_lut_saving", "lut", mac_units, k_depth)
+        baseline_dsp = _predict_metric(predictor_lookup, "baseline", "dsp", mac_units, k_depth)
+        shared_dsp = _predict_metric(predictor_lookup, "shared_dsp_reducing", "dsp", mac_units, k_depth)
+        baseline_latency = _predict_metric(predictor_lookup, "baseline", "latency_cycles", mac_units, k_depth)
+        shared_latency = _predict_metric(predictor_lookup, "shared_lut_saving", "latency_cycles", mac_units, k_depth)
+        baseline_throughput = _predict_metric(
+            predictor_lookup, "baseline", "effective_throughput_ops_per_cycle", mac_units, k_depth
+        )
+        shared_throughput = _predict_metric(
+            predictor_lookup, "shared_lut_saving", "effective_throughput_ops_per_cycle", mac_units, k_depth
+        )
+        shared_dsp_lut = _predict_metric(predictor_lookup, "shared_dsp_reducing", "lut", mac_units, k_depth)
+        rows.extend(
+            [
+                {
+                    "mac_units": mac_units,
+                    "k_depth": k_depth,
+                    "regime_id": "lut_budget_tight_relaxed_performance",
+                    "trust_status": trust_status,
+                    "preferred_variant": "shared_lut_saving",
+                    "decision_status": "shared_worth_overhead",
+                    "selection_condition": (
+                        f"LUT budget in [`{round(shared_lut, 3)}`, `{round(baseline_lut, 3)}`), DSP budget >= `{round(baseline_dsp, 3)}`, min throughput <= `{round(shared_throughput, 6)}`, max latency >= `{round(shared_latency, 3)}`."
+                    ),
+                    "why_preferred": "The LUT-oriented shared implementation is the lowest-LUT measured option and is only worthwhile when that LUT relief matters more than the fixed shared schedule penalty.",
+                    "why_not_others": "Baseline violates the LUT budget in this window; shared_dsp_reducing spends more LUT than shared_lut_saving while offering the wrong relief kind.",
+                },
+                {
+                    "mac_units": mac_units,
+                    "k_depth": k_depth,
+                    "regime_id": "dsp_budget_tight_relaxed_performance",
+                    "trust_status": trust_status,
+                    "preferred_variant": "shared_dsp_reducing",
+                    "decision_status": "shared_worth_overhead",
+                    "selection_condition": (
+                        f"DSP budget in [`{round(shared_dsp, 3)}`, `{round(baseline_dsp, 3)}`), LUT budget >= `{round(shared_dsp_lut, 3)}`, min throughput <= `{round(shared_throughput, 6)}`, max latency >= `{round(shared_latency, 3)}`."
+                    ),
+                    "why_preferred": "The DSP-oriented shared implementation is the only measured option that materially relieves DSP pressure inside the validated direct-slice family.",
+                    "why_not_others": "Baseline and shared_lut_saving both retain the baseline DSP floor, so they do not solve DSP pressure.",
+                },
+                {
+                    "mac_units": mac_units,
+                    "k_depth": k_depth,
+                    "regime_id": "performance_or_latency_dominant",
+                    "trust_status": trust_status,
+                    "preferred_variant": "baseline",
+                    "decision_status": "baseline_preferred",
+                    "selection_condition": (
+                        f"Min throughput > `{round(shared_throughput, 6)}` or max latency < `{round(shared_latency, 3)}`."
+                    ),
+                    "why_preferred": "Baseline keeps the shortest schedule and highest throughput, so the shared overhead is not worth paying when performance dominates.",
+                    "why_not_others": "Both shared variants give away roughly half the throughput and move to the 65-cycle schedule.",
+                },
+                {
+                    "mac_units": mac_units,
+                    "k_depth": k_depth,
+                    "regime_id": "no_hard_resource_bottleneck",
+                    "trust_status": trust_status,
+                    "preferred_variant": "baseline",
+                    "decision_status": "no_shared_option_worth_overhead",
+                    "selection_condition": (
+                        f"LUT budget >= `{round(baseline_lut, 3)}` and DSP budget >= `{round(baseline_dsp, 3)}`."
+                    ),
+                    "why_preferred": "When baseline already fits, the measured shared variants become bottleneck-specific overhead rather than a general improvement.",
+                    "why_not_others": "Shared variants only make sense when their relieved bottleneck dominates the lost performance.",
+                },
+                {
+                    "mac_units": mac_units,
+                    "k_depth": k_depth,
+                    "regime_id": "timing_margin_sensitive",
+                    "trust_status": trust_status,
+                    "preferred_variant": "unsupported_within_surface",
+                    "decision_status": "unsupported_due_to_wns_instability",
+                    "selection_condition": "Timing-margin-sensitive choice is intentionally not interpolated by this surface.",
+                    "why_preferred": "The direct-slice predictor marks WNS as too unstable for trusted decision interpolation, so timing-sensitive choice remains a measured-grid-specific lookup.",
+                    "why_not_others": "Promoting a smooth timing boundary would over-claim beyond the measured WNS evidence.",
+                },
+            ]
+        )
+    for mac_units, boundary_side in ((domain_min - 1, "below_measured_domain"), (domain_max + 1, "above_measured_domain")):
+        rows.append(
+            {
+                "mac_units": mac_units,
+                "k_depth": k_depth,
+                "regime_id": "unsupported_extrapolation_boundary",
+                "trust_status": UNSUPPORTED_EXTRAPOLATION,
+                "boundary_side": boundary_side,
+                "preferred_variant": "refuse_to_claim",
+                "decision_status": "unsupported_extrapolation",
+                "selection_condition": "Outside the measured direct-slice predictor domain.",
+                "why_preferred": "The repo should refuse a predictor-backed architecture choice outside the validated 16..64 mac-unit domain at k_depth=32.",
+                "why_not_others": "This surface is intentionally bounded to the measured lattice and its local interpolation region.",
+            }
+        )
+    return rows
+
+
+def build_measured_supported_region_map(
+    decision_rows: list[dict[str, Any]],
+    boundary_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not decision_rows or not boundary_rows:
+        return {}
+    supported_rows = [row for row in decision_rows if row["trust_status"] != UNSUPPORTED_EXTRAPOLATION]
+    mac_units_values = sorted({row["mac_units"] for row in supported_rows})
+    domain_min = mac_units_values[0]
+    domain_max = mac_units_values[-1]
+    return {
+        "headline": "This map marks the bounded measured regions where the direct-slice predictor supports an architecture choice and where the repo should explicitly refuse to claim one.",
+        "summary_lines": [
+            f"Supported interpolation is bounded to {domain_min} <= mac_units <= {domain_max} at k_depth=32 for the isolated baseline/shared_lut_saving/shared_dsp_reducing slice family.",
+            "Within that domain, baseline remains the default outside hard LUT- or DSP-pressure windows, shared_lut_saving owns the LUT-only window, and shared_dsp_reducing owns the DSP-only window.",
+            "Timing-margin-sensitive choice is kept out of the smooth surface because WNS is too unstable for trusted interpolation.",
+            "Below 16 mac units or above 64 mac units, the repo should refuse to claim a predictor-backed choice and mark the result as unsupported extrapolation.",
+        ],
+        "supported_region_rows": [
+            {
+                "region_id": "baseline_supported_default_region",
+                "trust_status": INTERPOLATED_WITHIN_MEASURED_DOMAIN,
+                "mac_units_min": domain_min,
+                "mac_units_max": domain_max,
+                "selection_condition": "No hard LUT/DSP bottleneck or performance/latency dominates.",
+            },
+            {
+                "region_id": "shared_lut_supported_region",
+                "trust_status": INTERPOLATED_WITHIN_MEASURED_DOMAIN,
+                "mac_units_min": domain_min,
+                "mac_units_max": domain_max,
+                "selection_condition": "LUT budget falls below the baseline LUT floor but still admits shared_lut_saving with relaxed performance bounds.",
+            },
+            {
+                "region_id": "shared_dsp_supported_region",
+                "trust_status": INTERPOLATED_WITHIN_MEASURED_DOMAIN,
+                "mac_units_min": domain_min,
+                "mac_units_max": domain_max,
+                "selection_condition": "DSP budget falls below the baseline DSP floor while LUT budget still admits shared_dsp_reducing and performance bounds remain relaxed.",
+            },
+            {
+                "region_id": "timing_sensitive_unsupported_region",
+                "trust_status": UNSUPPORTED_EXTRAPOLATION,
+                "mac_units_min": domain_min,
+                "mac_units_max": domain_max,
+                "selection_condition": "Timing-sensitive interpolation is intentionally refused because WNS is unstable.",
+            },
+            {
+                "region_id": "outside_domain_unsupported_region",
+                "trust_status": UNSUPPORTED_EXTRAPOLATION,
+                "mac_units_min": None,
+                "mac_units_max": None,
+                "selection_condition": "Any architecture choice outside the validated direct-slice domain.",
+            },
+        ],
+        "boundary_row_count": len(boundary_rows),
+        "decision_row_count": len(decision_rows),
+    }
+
+
+def build_measured_regime_transfer_summary(
+    decision_rows: list[dict[str, Any]],
+    boundary_rows: list[dict[str, Any]],
+    predictor_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not decision_rows or not boundary_rows or not predictor_rows:
+        return {}
+    supported_rows = [row for row in decision_rows if row["trust_status"] != UNSUPPORTED_EXTRAPOLATION]
+    domain_min = min(row["mac_units"] for row in supported_rows)
+    domain_max = max(row["mac_units"] for row in supported_rows)
+    lut_rows = [row for row in predictor_rows if row["metric"] == "lut"]
+    dsp_rows = [row for row in predictor_rows if row["metric"] == "dsp"]
+    throughput_rows = [row for row in predictor_rows if row["metric"] == "effective_throughput_ops_per_cycle"]
+    smooth_lut = all((row["max_abs_relative_residual_pct"] or 100.0) <= 2.5 for row in lut_rows)
+    exact_dsp = all(row["max_abs_residual"] is not None and row["max_abs_residual"] <= 1e-6 for row in dsp_rows)
+    exact_throughput = all(
+        row["max_abs_residual"] is not None and row["max_abs_residual"] <= 1e-6 for row in throughput_rows
+    )
+    summary_lines = [
+        f"The measured decision surface is bounded to the validated direct-slice interpolation domain {domain_min} <= mac_units <= {domain_max} at k_depth=32.",
+        (
+            "The LUT and DSP decision boundaries move smoothly across the measured domain: DSP scales exactly with mac_units, and the LUT boundaries follow low-residual local linear fits."
+            if smooth_lut and exact_dsp
+            else "The decision boundaries should be treated cautiously because one or more resource predictors are not smooth enough for trusted interpolation."
+        ),
+        (
+            "Baseline remains dominant whenever the design is performance-first or when no hard LUT/DSP bottleneck forces a shared choice."
+        ),
+        "shared_lut_saving is only worth its overhead inside the predictor-backed LUT window where baseline no longer fits but the LUT-oriented shared point still does.",
+        "shared_dsp_reducing is only worth its overhead inside the predictor-backed DSP window where baseline DSP is no longer admissible and the larger LUT footprint still fits.",
+        "Timing-sensitive transfer is intentionally excluded from the smooth decision surface because WNS remains too unstable for trusted interpolation.",
+        "Outside the validated direct-slice domain, the repo should refuse to claim a predictor-backed architecture choice.",
+    ]
+    return {
+        "headline": "This summary turns the measured predictor into a bounded architecture-choice surface for the isolated direct-slice family.",
+        "summary_lines": summary_lines,
+        "interpolation_domain_mac_units_min": domain_min,
+        "interpolation_domain_mac_units_max": domain_max,
+        "dsp_boundary_status": "exact" if exact_dsp else "caution",
+        "lut_boundary_status": "smooth_local_fit" if smooth_lut else "caution",
+        "throughput_boundary_status": "exact" if exact_throughput else "caution",
+        "decision_row_count": len(decision_rows),
+        "boundary_row_count": len(boundary_rows),
+    }
 
 
 def _measured_relief_kind(measured_dsp_delta: int | None, measured_lut_delta: int | None) -> str:
@@ -620,7 +1224,13 @@ def build_direct_shared_scaling_summary(tradeoff_rows: list[dict[str, Any]]) -> 
     grid_summaries = [_build_grid_shared_summary(group_rows) for _, group_rows in _group_tradeoff_rows_by_grid(tradeoff_rows)]
     measured_grids = [row["grid"] for row in grid_summaries]
     survives_all = all(row["three_way_rule_status"] == "survives" for row in grid_summaries)
-    if len(grid_summaries) >= 2:
+    if len(grid_summaries) >= 3:
+        scaling_rule = (
+            "The measured three-way rule survives through 8x8: baseline remains the performance-first option, shared_lut_saving remains the best LUT-relief option, and shared_dsp_reducing remains the DSP-relief option."
+            if survives_all
+            else "The measured three-way rule partially breaks by 8x8; use the per-grid measured ordering rather than assuming the smaller-grid roles scale cleanly."
+        )
+    elif len(grid_summaries) >= 2:
         scaling_rule = (
             "The 4x4 three-way rule survives at 8x4: baseline remains the performance-first option, shared_lut_saving remains the best LUT-relief option, and shared_dsp_reducing remains the DSP-relief option."
             if survives_all
@@ -629,7 +1239,7 @@ def build_direct_shared_scaling_summary(tradeoff_rows: list[dict[str, Any]]) -> 
     else:
         scaling_rule = "Only one measured three-way scale point is available so far, so the scaling rule is not yet established."
     return {
-        "headline": "This summary asks whether the measured three-way resource-relief rule survives from 4x4 to 8x4.",
+        "headline": "This summary asks whether the measured three-way resource-relief rule survives across the currently measured grids.",
         "measured_grids": measured_grids,
         "scale_points": len(grid_summaries),
         "scaling_rule_status": "survives" if survives_all else "partial_break" if len(grid_summaries) >= 2 else "insufficient_scale_data",
@@ -694,7 +1304,7 @@ def build_measured_support_rows(tradeoff_rows: list[dict[str, Any]]) -> list[dic
             claim_subject="baseline",
             claim_text="Baseline is the performance-first option relative to the measured shared implementations.",
             support_level=DIRECTLY_MEASURED_SUPPORTED,
-            measured_basis="Across the measured 4x4 and 8x4 direct slices, baseline keeps the 33-cycle schedule and higher ops/cycle than both measured shared implementations.",
+            measured_basis=f"Across the measured {', '.join(measured_grids)} direct slices, baseline keeps the 33-cycle schedule and higher ops/cycle than both measured shared implementations.",
             trust_note="This role is directly measured on the isolated slice, not inferred from the family model.",
             measured_grids=measured_grids,
         ),
@@ -704,7 +1314,7 @@ def build_measured_support_rows(tradeoff_rows: list[dict[str, Any]]) -> list[dic
             claim_subject="shared_lut_saving",
             claim_text="shared_lut_saving is the LUT-relief option.",
             support_level=DIRECTLY_MEASURED_SUPPORTED,
-            measured_basis="At both measured grids, shared_lut_saving is the lowest-LUT shared implementation and lowers LUT versus baseline while keeping the shared 65-cycle schedule.",
+            measured_basis=f"Across the measured {', '.join(measured_grids)} grids, shared_lut_saving is the lowest-LUT shared implementation and lowers LUT versus baseline while keeping the shared 65-cycle schedule.",
             trust_note="This is a directly measured implementation-specific role, not a statement about every shared strategy.",
             measured_grids=measured_grids,
         ),
@@ -714,7 +1324,7 @@ def build_measured_support_rows(tradeoff_rows: list[dict[str, Any]]) -> list[dic
             claim_subject="shared_dsp_reducing",
             claim_text="shared_dsp_reducing is the DSP-relief option.",
             support_level=DIRECTLY_MEASURED_SUPPORTED,
-            measured_basis="At both measured grids, shared_dsp_reducing reduces mapped DSP to 0 while retaining the shared 65-cycle schedule.",
+            measured_basis=f"Across the measured {', '.join(measured_grids)} grids, shared_dsp_reducing reduces mapped DSP to 0 while retaining the shared 65-cycle schedule.",
             trust_note="This is directly measured for the implemented DSP-oriented shared slice only.",
             measured_grids=measured_grids,
         ),
@@ -724,7 +1334,7 @@ def build_measured_support_rows(tradeoff_rows: list[dict[str, Any]]) -> list[dic
             claim_subject="shared_modelled_family",
             claim_text="Shared-family implementations trade lower throughput and higher latency for resource relief.",
             support_level=DIRECTLY_MEASURED_SUPPORTED,
-            measured_basis="Both measured shared implementations at both measured grids move from the 33-cycle baseline point to the 65-cycle shared point and halve effective ops/cycle.",
+            measured_basis=f"Both measured shared implementations across {', '.join(measured_grids)} move from the 33-cycle baseline point to the 65-cycle shared point and halve effective ops/cycle.",
             trust_note="The latency/throughput penalty direction is directly supported by measured implementations, even though the framework family remains modelled.",
             measured_grids=measured_grids,
         ),
@@ -734,7 +1344,7 @@ def build_measured_support_rows(tradeoff_rows: list[dict[str, Any]]) -> list[dic
             claim_subject="shared_modelled_family",
             claim_text="Shared-family implementations can relieve LUT pressure.",
             support_level=MEASURED_DIRECTIONALLY_SUPPORTED,
-            measured_basis="Both measured shared implementations reduce LUT versus baseline at 4x4 and 8x4, but the amount of LUT relief is implementation-specific.",
+            measured_basis=f"Both measured shared implementations reduce LUT versus baseline at {', '.join(measured_grids)}, but the amount of LUT relief is implementation-specific.",
             trust_note="Measured data supports LUT relief directionally, not as a single family-wide realization or fixed magnitude.",
             measured_grids=measured_grids,
         ),
@@ -744,7 +1354,7 @@ def build_measured_support_rows(tradeoff_rows: list[dict[str, Any]]) -> list[dic
             claim_subject="shared_modelled_family",
             claim_text="Shared-family implementations reduce DSP pressure.",
             support_level=MEASURED_PARTIAL_SUPPORT,
-            measured_basis="The measured DSP-oriented shared implementation reduces DSP to 0 at both measured grids, but the measured LUT-oriented shared implementation stays DSP-flat.",
+            measured_basis=f"The measured DSP-oriented shared implementation reduces DSP to 0 across {', '.join(measured_grids)}, but the measured LUT-oriented shared implementation stays DSP-flat.",
             trust_note="DSP relief is implementation-dependent; the measured direct slice does not justify treating all shared implementations as one DSP-saving hardware truth.",
             measured_grids=measured_grids,
         ),
@@ -762,10 +1372,18 @@ def build_measured_support_rows(tradeoff_rows: list[dict[str, Any]]) -> list[dic
             claim_id="shared_8x8_dsp_reduction_anchor",
             claim_scope="family_level_extrapolation",
             claim_subject="shared_modelled_family_8x8",
-            claim_text="The 8x8 shared-family DSP reduction is directly measured in this repo's current isolated direct slice.",
-            support_level=EXTRAPOLATED_BEYOND_MEASURED_SUPPORT,
-            measured_basis="The repo has direct shared measurements only at 4x4 and 8x4. The 8x8 shared DSP reduction still comes from anchored prior-study evidence plus the modelled family layer.",
-            trust_note="Treat 8x8 shared-family DSP reduction as anchored/modelled rather than directly measured implementation truth.",
+            claim_text="The 8x8 shared-family DSP reduction is directly measured as one family-wide shared hardware truth in this repo's current isolated direct slice.",
+            support_level=MEASURED_PARTIAL_SUPPORT if "8x8" in measured_grids else EXTRAPOLATED_BEYOND_MEASURED_SUPPORT,
+            measured_basis=(
+                "The repo now has direct 8x8 shared implementation measurements for both shared_lut_saving and shared_dsp_reducing, but the broader family-level 8x8 shared row in the framework remains a modelled-family conclusion rather than one directly measured shared-family truth."
+                if "8x8" in measured_grids
+                else "The repo has direct shared measurements only at 4x4 and 8x4. The 8x8 shared DSP reduction still comes from anchored prior-study evidence plus the modelled family layer."
+            ),
+            trust_note=(
+                "8x8 shared implementations are now directly measured on the isolated slice, but the framework's single 8x8 shared-family row should still be read as a modelled-family conclusion with implementation-dependent realization."
+                if "8x8" in measured_grids
+                else "Treat 8x8 shared-family DSP reduction as anchored/modelled rather than directly measured implementation truth."
+            ),
             measured_grids=measured_grids,
         ),
     ]
@@ -815,7 +1433,11 @@ def build_measured_trust_summary(support_rows: list[dict[str, Any]]) -> dict[str
         "Resource relief is implementation-specific: one measured shared implementation relieves LUT pressure, while another relieves DSP pressure.",
         "Shared-family latency and throughput penalties are directly measured in the isolated slice, but shared-family resource relief remains implementation-dependent.",
         "The direct evidence does not justify collapsing all shared implementations into one measured hardware truth.",
-        "Family-level 8x8 shared DSP reduction remains an anchored/modelled claim that is extrapolated beyond measured support.",
+        (
+            "8x8 shared implementations are now directly measured on the isolated slice, but the single 8x8 shared-family framework row remains a modelled-family conclusion rather than one measured shared hardware truth."
+            if any(row["claim_id"] == "shared_8x8_dsp_reduction_anchor" and row["support_level"] == MEASURED_PARTIAL_SUPPORT for row in support_rows)
+            else "Family-level 8x8 shared DSP reduction remains an anchored/modelled claim that is extrapolated beyond measured support."
+        ),
         "Framework shared recommendations should be read as modelled-family conclusions with implementation-dependent realization.",
     ]
     return {
@@ -1051,7 +1673,11 @@ def build_framework_calibration_overlay_rows(calibration_rows: list[dict[str, An
             overlay_topic="shared_family_numeric_projection_boundary",
             calibration_status=CALIBRATION_TOO_UNCERTAIN,
             calibration_reading="Family-level shared resource projections should be read through the measured calibration aid as a caution reference, not as a direct replacement by local implementation numbers.",
-            usage_note="The current calibration layer bounds trust near the measured 4x4 and 8x4 slice evidence; 8x8 shared resource claims remain anchored/modelled.",
+            usage_note=(
+                "The current calibration layer now reaches through the measured 4x4, 8x4, and 8x8 slice evidence, but the framework's single shared-family resource row still remains modelled-family rather than one directly measured shared hardware truth."
+                if "8x8" in measured_grids
+                else "The current calibration layer bounds trust near the measured 4x4 and 8x4 slice evidence; 8x8 shared resource claims remain anchored/modelled."
+            ),
             measured_grids=measured_grids,
         ),
     ]
@@ -1077,7 +1703,7 @@ def build_shared_family_calibration_summary(
     summary_lines = [
         "This calibration aid keeps the framework as a modelled family layer, but adds a measured caution reference from the direct slice rather than treating shared-family resource numbers as unconstrained.",
         (
-            f"Baseline LUT is numerically optimistic in the lightweight framework across the measured 4x4 and 8x4 bridge, with relative error spanning `{baseline_error_min}`% to `{baseline_error_max}`%."
+            f"Baseline LUT is numerically optimistic in the lightweight framework across the measured {', '.join(measured_grids)} bridge, with relative error spanning `{baseline_error_min}`% to `{baseline_error_max}`%."
             if baseline_error_min is not None and baseline_error_max is not None
             else "Baseline LUT remains a caution-reference case rather than a fully trusted numeric prediction."
         ),
@@ -1089,7 +1715,11 @@ def build_shared_family_calibration_summary(
         "Shared-family DSP reduction is implementation-dependent, not a universally calibrated measured truth.",
         "Shared-family LUT expectations are approximate because the two measured shared implementations realize different resource tradeoffs.",
         "Read family-level shared resource projections through this calibration aid and caution band, not as a direct replacement of the modelled family with local implementation values.",
-        "8x8 shared-family resource conclusions remain modelled/anchored beyond the directly calibrated 4x4 and 8x4 slice evidence.",
+        (
+            "The new 8x8 direct shared measurements remove the isolated direct-slice measurement gap at 8x8, but the framework's single shared-family 8x8 resource row still remains a modelled/anchored family-level reading rather than one measured shared hardware truth."
+            if "8x8" in measured_grids
+            else "8x8 shared-family resource conclusions remain modelled/anchored beyond the directly calibrated 4x4 and 8x4 slice evidence."
+        ),
     ]
     return {
         "headline": "This summary turns the direct-slice evidence into a measured calibration aid for reading the broader shared-family framework outputs.",
@@ -1261,11 +1891,12 @@ def build_measured_utility_summary(
         return {}
     measured_grids = sorted({row["grid"] for row in utility_rows})
     timing_choices = {row["grid"]: row["preferred_variant"] for row in bottleneck_rows if row["bottleneck_kind"] == "timing_margin"}
-    timing_line = (
-        "Timing-margin preference is grid-dependent in the measured slice: 4x4 favors `shared_dsp_reducing`, while 8x4 favors `baseline`."
-        if timing_choices.get("4x4") != timing_choices.get("8x4")
-        else f"Timing-margin preference is consistent across the measured slice and favors `{next(iter(set(timing_choices.values())))}.`"
-    )
+    if len(set(timing_choices.values())) == 1:
+        timing_line = f"Timing-margin preference is consistent across the measured slice and favors `{next(iter(set(timing_choices.values())))}.`"
+    else:
+        timing_line = "Timing-margin preference is grid-dependent in the measured slice: " + ", ".join(
+            f"{grid} favors `{variant}`" for grid, variant in sorted(timing_choices.items())
+        ) + "."
     summary_lines = [
         "Baseline is still the best measured default when performance dominates.",
         "shared_lut_saving is worthwhile when LUT pressure is the real bottleneck and the shared-style performance penalty is acceptable.",
@@ -1543,6 +2174,85 @@ def render_measured_design_rule_extraction_summary(
     output_path.write_text("\n".join(lines) + "\n")
 
 
+def render_measured_regime_transfer_summary(
+    output_path: Path,
+    summary: dict[str, Any],
+    decision_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Measured Regime Transfer Summary",
+        "",
+    ]
+    if not summary:
+        lines.append("- No measured regime-transfer surface is available yet.")
+    else:
+        lines.append(f"- {summary['headline']}")
+        for line in summary["summary_lines"]:
+            lines.append(f"- {line}")
+        lines.extend(["", "## Decision Surface", ""])
+        for row in decision_rows[:12]:
+            lines.append(
+                f"- `mac_units={row['mac_units']}` / `{row['regime_id']}` / `{row['trust_status']}` -> `{row['preferred_variant']}`: {row['selection_condition']}"
+            )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n")
+
+
+def render_measured_supported_region_map(output_path: Path, summary: dict[str, Any]) -> None:
+    lines = [
+        "# Measured Supported Region Map",
+        "",
+    ]
+    if not summary:
+        lines.append("- No supported-region map is available yet.")
+    else:
+        lines.append(f"- {summary['headline']}")
+        for line in summary["summary_lines"]:
+            lines.append(f"- {line}")
+        lines.extend(["", "## Supported Regions", ""])
+        for row in summary.get("supported_region_rows", []):
+            lines.append(
+                f"- `{row['region_id']}` / `{row['trust_status']}`: {row['selection_condition']}"
+            )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n")
+
+
+def render_measured_predictor_summary(output_path: Path, summary: dict[str, Any], predictor_rows: list[dict[str, Any]]) -> None:
+    lines = [
+        "# Measured Predictor Summary",
+        "",
+    ]
+    if not summary:
+        lines.append("- No measured predictor can be stated yet.")
+    else:
+        lines.append(f"- {summary['headline']}")
+        for line in summary["summary_lines"]:
+            lines.append(f"- {line}")
+        lines.extend(["", "## Predictor Table", ""])
+        for row in predictor_rows:
+            lines.append(
+                f"- `{row['architecture_variant']}` / `{row['metric']}` -> `{row['fit_status']}` with formula `{row['predictor_formula']}` and max residual `{row['max_abs_residual']}`."
+            )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n")
+
+
+def render_measured_extrapolation_boundary(output_path: Path, summary: dict[str, Any]) -> None:
+    lines = [
+        "# Measured Extrapolation Boundary",
+        "",
+    ]
+    if not summary:
+        lines.append("- No extrapolation boundary can be stated yet.")
+    else:
+        lines.append(f"- {summary['headline']}")
+        for line in summary["summary_lines"]:
+            lines.append(f"- {line}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n")
+
+
 def _regime_thresholds(row: dict[str, Any]) -> dict[str, float]:
     return {
         "baseline_lut": float(row["baseline_measured_lut"]),
@@ -1789,7 +2499,7 @@ def render_direct_slice_summary(
         "# Direct MAC-Array Slice Summary",
         "",
         "- This summary covers the standalone directly measurable MAC-array slice family used for the smallest baseline-vs-shared bridge.",
-        "- Scope remains intentionally narrow: direct measurement currently covers the isolated baseline slice plus selective 4x4 and 8x4 shared implementations, not the full baseline/shared/replicated/adaptive family.",
+        "- Scope remains intentionally narrow: direct measurement currently covers the isolated baseline slice plus selective shared implementations on the direct slice, not the full baseline/shared/replicated/adaptive family.",
         f"- Directly measured baseline points: `{summary['measured_points']}`.",
         f"- Baseline DSP exact matches: `{summary['dsp_exact_match_count']}`. Baseline latency exact matches: `{summary['latency_exact_match_count']}`. Baseline throughput exact matches: `{summary['throughput_exact_match_count']}`.",
         "",
@@ -1860,7 +2570,7 @@ def render_direct_tradeoff_summary(output_path: Path, rows: list[dict[str, Any]]
         "# Direct Baseline-vs-Shared Tradeoff Summary",
         "",
         "- This summary covers the directly measured MAC-array architecture tradeoffs in the repo.",
-        "- Scope is intentionally narrow: baseline and the measured shared implementations are compared only on the isolated direct slice, with 4x4 and 8x4 as the measured bridge points.",
+        "- Scope is intentionally narrow: baseline and the measured shared implementations are compared only on the isolated direct slice at the currently measured bridge points.",
         "- Baseline direct calibration remains baseline-only; each shared implementation is compared against the lightweight shared model and against the measured baseline point without claiming global calibration.",
         "",
     ]
@@ -1922,7 +2632,7 @@ def render_direct_shared_scaling_summary(output_path: Path, summary: dict[str, A
         "",
     ]
     if not summary:
-        lines.append("- No two-scale shared comparison is available yet.")
+        lines.append("- No multi-scale shared comparison is available yet.")
     else:
         lines.append(f"- {summary['headline']}")
         for line in summary["summary_lines"]:

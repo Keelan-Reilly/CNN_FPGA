@@ -20,16 +20,28 @@ try:
         build_framework_calibration_overlay_rows,
         build_framework_trust_overlay_rows,
         build_measured_bottleneck_choice_map,
+        build_measured_budget_boundary_rows,
+        build_measured_decision_surface,
         build_measured_design_rule_extraction_summary,
+        build_measured_extrapolation_boundary_summary,
+        build_measured_fit_residual_rows,
         build_measured_flexibility_justification_table,
         build_measured_flexibility_overhead_rows,
+        build_measured_predictor_rows,
+        build_measured_predictor_summary,
+        build_measured_regime_transfer_summary,
+        build_measured_supported_region_map,
         build_measured_support_rows,
         build_measured_trust_summary,
         build_measured_utility_rows,
         build_measured_utility_summary,
         build_shared_family_calibration_summary,
         render_measured_vs_modelled_trust_summary,
+        render_measured_regime_transfer_summary,
+        render_measured_supported_region_map,
         render_measured_utility_summary,
+        render_measured_extrapolation_boundary,
+        render_measured_predictor_summary,
         render_shared_family_calibration_summary,
         render_measured_design_rule_extraction_summary,
     )
@@ -63,16 +75,28 @@ except ImportError:
         build_framework_calibration_overlay_rows,
         build_framework_trust_overlay_rows,
         build_measured_bottleneck_choice_map,
+        build_measured_budget_boundary_rows,
+        build_measured_decision_surface,
         build_measured_design_rule_extraction_summary,
+        build_measured_extrapolation_boundary_summary,
+        build_measured_fit_residual_rows,
         build_measured_flexibility_justification_table,
         build_measured_flexibility_overhead_rows,
+        build_measured_predictor_rows,
+        build_measured_predictor_summary,
+        build_measured_regime_transfer_summary,
+        build_measured_supported_region_map,
         build_measured_support_rows,
         build_measured_trust_summary,
         build_measured_utility_rows,
         build_measured_utility_summary,
         build_shared_family_calibration_summary,
         render_measured_vs_modelled_trust_summary,
+        render_measured_regime_transfer_summary,
+        render_measured_supported_region_map,
         render_measured_utility_summary,
+        render_measured_extrapolation_boundary,
+        render_measured_predictor_summary,
         render_shared_family_calibration_summary,
         render_measured_design_rule_extraction_summary,
     )
@@ -288,6 +312,10 @@ def main() -> int:
 
     measured_summary = current_measured_summary()
     direct_rows = build_direct_slice_comparison_rows()
+    predictor_rows = build_measured_predictor_rows(direct_rows)
+    predictor_residual_rows = build_measured_fit_residual_rows(direct_rows, predictor_rows)
+    predictor_summary = build_measured_predictor_summary(predictor_rows)
+    extrapolation_boundary = build_measured_extrapolation_boundary_summary(predictor_rows)
     direct_tradeoff_rows = build_direct_tradeoff_rows(direct_rows)
     support_rows = build_measured_support_rows(direct_tradeoff_rows)
     trust_overlay_rows = build_framework_trust_overlay_rows(support_rows)
@@ -304,6 +332,14 @@ def main() -> int:
         flexibility_overhead_rows,
         flexibility_justification_rows,
     )
+    decision_surface_rows = build_measured_decision_surface(predictor_rows, utility_rows, bottleneck_rows)
+    budget_boundary_rows = build_measured_budget_boundary_rows(predictor_rows)
+    regime_transfer_summary = build_measured_regime_transfer_summary(
+        decision_surface_rows,
+        budget_boundary_rows,
+        predictor_rows,
+    )
+    supported_region_map = build_measured_supported_region_map(decision_surface_rows, budget_boundary_rows)
     provenance_rows = provenance_summary_rows(evidence)
 
     def regime_adaptive_factory(grid_label: str, workload_name: str, constraint: ConstraintSpec) -> dict[str, Any] | None:
@@ -346,6 +382,12 @@ def main() -> int:
     write_json(output_dir / "provenance_summary.json", provenance_rows)
     write_csv(output_dir / "provenance_summary.csv", provenance_rows)
     write_json(output_dir / "legacy_measured_summary.json", measured_summary)
+    write_csv(output_dir / "measured_predictor_table.csv", predictor_rows)
+    write_json(output_dir / "measured_predictor_table.json", predictor_rows)
+    write_csv(output_dir / "measured_fit_residuals.csv", predictor_residual_rows)
+    write_json(output_dir / "measured_fit_residuals.json", predictor_residual_rows)
+    write_json(output_dir / "measured_predictor_summary.json", predictor_summary)
+    write_json(output_dir / "measured_extrapolation_boundary.json", extrapolation_boundary)
     write_csv(output_dir / "measured_support_map.csv", support_rows)
     write_json(output_dir / "measured_support_map.json", support_rows)
     write_csv(output_dir / "framework_trust_overlay.csv", trust_overlay_rows)
@@ -366,6 +408,12 @@ def main() -> int:
     write_csv(output_dir / "measured_flexibility_justification_table.csv", flexibility_justification_rows)
     write_json(output_dir / "measured_flexibility_justification_table.json", flexibility_justification_rows)
     write_json(output_dir / "measured_design_rule_extraction_summary.json", design_rule_extraction_summary)
+    write_csv(output_dir / "measured_decision_surface.csv", decision_surface_rows)
+    write_json(output_dir / "measured_decision_surface.json", decision_surface_rows)
+    write_csv(output_dir / "measured_budget_boundary_table.csv", budget_boundary_rows)
+    write_json(output_dir / "measured_budget_boundary_table.json", budget_boundary_rows)
+    write_json(output_dir / "measured_regime_transfer_summary.json", regime_transfer_summary)
+    write_json(output_dir / "measured_supported_region_map.json", supported_region_map)
     write_csv(output_dir / "workload_manifest.csv", workload_manifest_rows)
     write_json(output_dir / "workload_manifest.json", workload_manifest_rows)
     write_csv(output_dir / "static_architectures.csv", static_rows)
@@ -420,6 +468,15 @@ def main() -> int:
         summary=calibration_summary,
         overlay_rows=calibration_overlay_rows,
     )
+    render_measured_predictor_summary(
+        output_path=output_dir / "measured_predictor_summary.md",
+        summary=predictor_summary,
+        predictor_rows=predictor_rows,
+    )
+    render_measured_extrapolation_boundary(
+        output_path=output_dir / "measured_extrapolation_boundary.md",
+        summary=extrapolation_boundary,
+    )
     render_measured_utility_summary(
         output_path=output_dir / "measured_utility_summary.md",
         summary=utility_summary,
@@ -429,6 +486,15 @@ def main() -> int:
         output_path=output_dir / "measured_design_rule_extraction_summary.md",
         summary=design_rule_extraction_summary,
         justification_rows=flexibility_justification_rows,
+    )
+    render_measured_regime_transfer_summary(
+        output_path=output_dir / "measured_regime_transfer_summary.md",
+        summary=regime_transfer_summary,
+        decision_rows=decision_surface_rows,
+    )
+    render_measured_supported_region_map(
+        output_path=output_dir / "measured_supported_region_map.md",
+        summary=supported_region_map,
     )
     render_regime_insights_markdown(
         output_path=output_dir / "regime_insights.md",

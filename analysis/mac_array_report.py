@@ -115,6 +115,26 @@ def current_measured_summary() -> dict[str, Any]:
     if measured_design_rule_extraction_summary_path.exists():
         measured_design_rule_extraction_summary = json.loads(measured_design_rule_extraction_summary_path.read_text())
 
+    measured_predictor_summary_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "measured_predictor_summary.json"
+    measured_predictor_summary = None
+    if measured_predictor_summary_path.exists():
+        measured_predictor_summary = json.loads(measured_predictor_summary_path.read_text())
+
+    measured_extrapolation_boundary_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "measured_extrapolation_boundary.json"
+    measured_extrapolation_boundary = None
+    if measured_extrapolation_boundary_path.exists():
+        measured_extrapolation_boundary = json.loads(measured_extrapolation_boundary_path.read_text())
+
+    measured_regime_transfer_summary_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "measured_regime_transfer_summary.json"
+    measured_regime_transfer_summary = None
+    if measured_regime_transfer_summary_path.exists():
+        measured_regime_transfer_summary = json.loads(measured_regime_transfer_summary_path.read_text())
+
+    measured_supported_region_map_path = REPO_ROOT / "results" / "fpga" / "framework_v2" / "direct_slice" / "measured_supported_region_map.json"
+    measured_supported_region_map = None
+    if measured_supported_region_map_path.exists():
+        measured_supported_region_map = json.loads(measured_supported_region_map_path.read_text())
+
     return {
         "source_datasets": [
             "results/fpga/aggregates/study_baseline_characterization.json",
@@ -185,6 +205,22 @@ def current_measured_summary() -> dict[str, Any]:
         "measured_design_rule_extraction_summary": {
             "source_path": str(measured_design_rule_extraction_summary_path.relative_to(REPO_ROOT)) if measured_design_rule_extraction_summary_path.exists() else None,
             "summary": measured_design_rule_extraction_summary,
+        },
+        "measured_predictor_summary": {
+            "source_path": str(measured_predictor_summary_path.relative_to(REPO_ROOT)) if measured_predictor_summary_path.exists() else None,
+            "summary": measured_predictor_summary,
+        },
+        "measured_extrapolation_boundary": {
+            "source_path": str(measured_extrapolation_boundary_path.relative_to(REPO_ROOT)) if measured_extrapolation_boundary_path.exists() else None,
+            "summary": measured_extrapolation_boundary,
+        },
+        "measured_regime_transfer_summary": {
+            "source_path": str(measured_regime_transfer_summary_path.relative_to(REPO_ROOT)) if measured_regime_transfer_summary_path.exists() else None,
+            "summary": measured_regime_transfer_summary,
+        },
+        "measured_supported_region_map": {
+            "source_path": str(measured_supported_region_map_path.relative_to(REPO_ROOT)) if measured_supported_region_map_path.exists() else None,
+            "summary": measured_supported_region_map,
         },
     }
 
@@ -270,7 +306,7 @@ def render_markdown_report(
         "## Measured vs Modelled",
         "",
         "- Measured: current checked-in CNN baseline and dense-parallel sweep aggregates.",
-        "- Direct measured MAC slice: baseline calibration points plus directly measured 4x4 and 8x4 shared implementations when the direct slice artifacts are present.",
+        "- Direct measured MAC slice: baseline calibration points plus the currently measured shared implementations when the direct slice artifacts are present.",
         "- Framework shared rows refer to the modelled shared family `shared_modelled_dsp_reducing`; the direct shared slices are separate implementation-specific measured observations.",
         "- Anchored: prior MAC-array static facts explicitly carried in the evidence registry.",
         "- Modelled: workload classes, utilization-aware latency/throughput estimates, adaptive switching costs, break-even thresholds, and policy recommendations.",
@@ -301,14 +337,24 @@ def render_markdown_report(
     bottleneck_map_rows = bottleneck_map_wrapper.get("rows") or []
     design_rule_summary_wrapper = measured_summary.get("measured_design_rule_extraction_summary", {})
     design_rule_summary = design_rule_summary_wrapper.get("summary")
+    predictor_summary_wrapper = measured_summary.get("measured_predictor_summary", {})
+    predictor_summary = predictor_summary_wrapper.get("summary")
+    extrapolation_boundary_wrapper = measured_summary.get("measured_extrapolation_boundary", {})
+    extrapolation_boundary = extrapolation_boundary_wrapper.get("summary")
+    regime_transfer_summary_wrapper = measured_summary.get("measured_regime_transfer_summary", {})
+    regime_transfer_summary = regime_transfer_summary_wrapper.get("summary")
+    supported_region_map_wrapper = measured_summary.get("measured_supported_region_map", {})
+    supported_region_map = supported_region_map_wrapper.get("summary")
     direct_shared_notes: list[str] = []
     trust_notes: list[str] = []
     calibration_notes: list[str] = []
     utility_notes: list[str] = []
     design_rule_notes: list[str] = []
+    predictor_notes: list[str] = []
+    decision_surface_notes: list[str] = []
     if direct_tradeoff_pair:
         direct_tradeoff_note = (
-            f"- Direct measured bridge now covers the isolated slice at 4x4 and 8x4, with each shared point anchored back to the measured baseline schedule and resource point for its grid."
+            f"- Direct measured bridge now covers the isolated slice at the currently measured shared grids, with each shared point anchored back to the measured baseline schedule and resource point for its grid."
         )
     if direct_shared_summary:
         direct_shared_notes.append(f"- {direct_shared_summary['headline']}")
@@ -330,6 +376,22 @@ def render_markdown_report(
         design_rule_notes.append(f"- {design_rule_summary['headline']}")
         for line in design_rule_summary.get("summary_lines", []):
             design_rule_notes.append(f"- {line}")
+    if predictor_summary:
+        predictor_notes.append(f"- {predictor_summary['headline']}")
+        for line in predictor_summary.get("summary_lines", []):
+            predictor_notes.append(f"- {line}")
+    if extrapolation_boundary:
+        predictor_notes.append(f"- {extrapolation_boundary['headline']}")
+        for line in extrapolation_boundary.get("summary_lines", []):
+            predictor_notes.append(f"- {line}")
+    if regime_transfer_summary:
+        decision_surface_notes.append(f"- {regime_transfer_summary['headline']}")
+        for line in regime_transfer_summary.get("summary_lines", []):
+            decision_surface_notes.append(f"- {line}")
+    if supported_region_map:
+        decision_surface_notes.append(f"- {supported_region_map['headline']}")
+        for line in supported_region_map.get("summary_lines", []):
+            decision_surface_notes.append(f"- {line}")
     for row in bottleneck_map_rows[:5]:
         utility_notes.append(f"- `{row['grid']}` / `{row['bottleneck_kind']}` -> `{row['preferred_variant']}`: {row['decision_basis']}")
     for row in calibration_overlay_rows[:4]:
@@ -342,14 +404,16 @@ def render_markdown_report(
             "",
             "## Strongest Insights",
             "",
-            f"- The framework shared family currently means the modelled variant `{shared_8x8['architecture_variant_id']}`, not the directly measured 4x4 and 8x4 shared implementations.",
-            f"- Shared 8x8 keeps the anchored prior-study DSP reduction from `{baseline_8x8['dsp']}` to `{shared_8x8['dsp']}`, but that anchor now sits alongside measured 4x4 and 8x4 shared implementations that separate LUT-oriented sharing from DSP-oriented sharing on Artix-7.",
+            f"- The framework shared family currently means the modelled variant `{shared_8x8['architecture_variant_id']}`, not the directly measured shared implementations on the isolated direct slice.",
+            f"- Shared 8x8 still keeps the anchored prior-study DSP reduction from `{baseline_8x8['dsp']}` to `{shared_8x8['dsp']}` at the family-model layer, but that anchor now sits alongside measured 4x4, 8x4, and 8x8 shared implementations that separate LUT-oriented sharing from DSP-oriented sharing on Artix-7.",
             *([direct_tradeoff_note] if direct_tradeoff_note else []),
             *direct_shared_notes,
             *trust_notes,
             *calibration_notes,
             *utility_notes,
             *design_rule_notes,
+            *predictor_notes,
+            *decision_surface_notes,
             f"- Replicated 8x8 remains excluded on Artix-7 because the framework preserves the `{replicated_8x8['implementation_status']}` evidence rather than treating the missing implementation as neutral.",
             f"- Adaptive mode switching wins in `{len(adaptive_wins)}` policy scenarios; under the tighter mode-pair-aware switching model it is currently a conservative option rather than a default recommendation.",
             f"- The bounded regime map covers `{regime_meta['regime_points']}` points; adaptive win region present: `{regime_meta['adaptive_has_win_region']}`.",
@@ -444,6 +508,14 @@ def render_markdown_report(
             "- `measured_flexibility_overhead_table.csv/json`: measured overhead rows quantifying what flexibility costs each shared implementation against baseline.",
             "- `measured_flexibility_justification_table.csv/json`: bounded measured table for when flexibility is justified and when baseline should be preferred.",
             "- `measured_design_rule_extraction_summary.md/json`: thesis-style measured design-rule conclusion for when flexibility is justified versus when it is just overhead.",
+            "- `measured_predictor_table.csv/json`: compact local predictor rows for the isolated direct-slice architecture family, with per-variant metric fits.",
+            "- `measured_fit_residuals.csv/json`: residuals of the local measured predictor at each measured lattice point.",
+            "- `measured_predictor_summary.md/json`: concise summary of which metrics are well fit by the local predictor and which remain caution-only.",
+            "- `measured_extrapolation_boundary.md/json`: explicit interpolation/extrapolation boundary for the local direct-slice predictor.",
+            "- `measured_decision_surface.csv/json`: bounded predictor-backed architecture-choice surface over the validated direct-slice domain, with trust status on every row.",
+            "- `measured_budget_boundary_table.csv/json`: compact LUT/DSP/performance boundary rows showing where shared relief becomes worth its overhead inside the measured domain.",
+            "- `measured_regime_transfer_summary.md/json`: concise summary of how the measured architecture-choice boundaries move across the validated direct-slice domain.",
+            "- `measured_supported_region_map.md/json`: explicit supported-region map marking interpolation-backed choice regions and where the repo refuses extrapolated claims.",
             "- `direct_slice/`: direct measured-vs-modelled baseline calibration outputs, direct shared scaling outputs, measured support map rows, measured trust summaries, and direct calibration aids.",
             "",
             "## Limitations",

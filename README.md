@@ -245,7 +245,7 @@ This makes `100 MHz` the practical reference point for the current checked-in st
 
 The repo now also includes a reusable MAC-array decision layer under `results/fpga/framework_v2/`. Its current checked-in narrative is:
 
-- the framework's `shared` recommendation now refers to the modelled shared family, not the directly measured 4x4 and 8x4 shared implementations; at 8x8 it still uses the prior `64 -> 32 DSP` anchor, but that is now clearly separated from the measured direct slices.
+- the framework's `shared` recommendation now refers to the modelled shared family, not the directly measured shared implementations on the isolated direct slice; at 8x8 it still uses the prior `64 -> 32 DSP` anchor at the family-model layer, but that is now clearly separated from the measured 4x4/8x4/8x8 direct slices.
 - the direct slice now shows that sharing is not one thing: `shared_lut_saving` buys LUT relief, while `shared_dsp_reducing` buys DSP relief on this Artix-7 flow.
 - the measured 4x4 three-way rule survives the first scale step to 8x4: baseline stays performance-first, `shared_lut_saving` stays LUT-first, and `shared_dsp_reducing` stays DSP-first.
 - the repo now also carries a measured trust boundary: implementation-specific direct-slice roles are directly supported, some shared-family directions are only partially or directionally supported, and broader shared-family claims remain modelled or anchored beyond measured support.
@@ -260,7 +260,7 @@ The repo now also includes a reusable MAC-array decision layer under `results/fp
 
 ### Direct MAC-array slice
 
-The repo now also has a smallest-possible directly measurable MAC-array foothold: a standalone direct slice in `hdl/mac_array_direct_top.sv` with baseline plus two small shared implementations. The measured bridge is intentionally small and isolated: 4x4 and 8x4 baseline points compared against both a LUT-saving shared slice and a DSP-reducing shared slice through the same Vivado and aggregation pipeline as the rest of the repo.
+The repo now also has a smallest-possible directly measurable MAC-array foothold: a standalone direct slice in `hdl/mac_array_direct_top.sv` with baseline plus two small shared implementations. The measured bridge is intentionally small and isolated: 4x4, 8x4, and 8x8 baseline points compared against both a LUT-saving shared slice and a DSP-reducing shared slice through the same Vivado and aggregation pipeline as the rest of the repo.
 
 ```bash
 make fpga_mac_direct_preview
@@ -279,7 +279,7 @@ python3 analysis/run_mac_array_direct_slice.py
 This path is explicitly separate from the CNN top and from the proxy-only refresh flow:
 
 - it is a direct MAC-array RTL slice,
-- it now directly measures both baseline calibration points and shared bridge points at 4x4 and 8x4,
+- it now directly measures both baseline calibration points and shared bridge points at 4x4, 8x4, and 8x8,
 - it feeds comparison artifacts into `results/fpga/framework_v2/direct_slice/`,
 - it does not claim direct replicated or adaptive hardware support yet.
 
@@ -303,7 +303,7 @@ The directly measured shared comparison set at `K_DEPTH=32` now spans two scales
 
 Those results are intentionally reported honestly: `shared_lut_saving` buys the strongest LUT reduction at both measured scales but stays DSP-flat, while `shared_dsp_reducing` removes DSP usage at both measured scales with a weaker LUT win.
 
-The measured scaling rule is now explicit: the 4x4 three-way rule survives at 8x4. Use `shared_lut_saving` for LUT-only pressure, use `shared_dsp_reducing` for DSP pressure, and keep `baseline` when throughput, latency, or timing-margin demands dominate.
+The measured scaling rule is now explicit: the three-way rule survives through 8x8. Use `shared_lut_saving` for LUT-only pressure, use `shared_dsp_reducing` for DSP pressure, and keep `baseline` when throughput, latency, or timing-margin demands dominate.
 
 The measured utility rule is now explicit too: these shared implementations are bottleneck-specific relief mechanisms, not generally better options. Their utility disappears when there is no hard resource bottleneck or when performance dominates, and timing-margin preference is even grid-dependent (`shared_dsp_reducing` at `4x4`, `baseline` at `8x4`).
 

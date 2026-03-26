@@ -25,8 +25,16 @@ from analysis.mac_array_direct_slice import (
     build_measured_trust_summary,
     build_direct_tradeoff_rows,
     build_measured_design_rule_summary,
+    build_measured_budget_boundary_rows,
+    build_measured_decision_surface,
+    build_measured_extrapolation_boundary_summary,
+    build_measured_fit_residual_rows,
     build_measured_flexibility_justification_table,
     build_measured_flexibility_overhead_rows,
+    build_measured_predictor_rows,
+    build_measured_predictor_summary,
+    build_measured_regime_transfer_summary,
+    build_measured_supported_region_map,
     build_measured_tradeoff_decision_rows,
     build_measured_utility_rows,
     build_measured_utility_summary,
@@ -164,6 +172,172 @@ class DirectMacSliceTest(unittest.TestCase):
                 "direct_slice_latency_model_cycles": 65,
                 "measured_effective_throughput_ops_per_cycle": 15.753846153846155,
                 "direct_slice_throughput_model_ops_per_cycle": 15.753846,
+            },
+        ]
+
+    def _three_scale_actual_input_rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "grid": "4x4",
+                "grid_rows": 4,
+                "grid_cols": 4,
+                "mac_units": 16,
+                "k_depth": 32,
+                "architecture": "baseline",
+                "architecture_family": "baseline",
+                "comparison_status": "direct_measured_vs_modelled",
+                "run_id": "baseline_4x4",
+                "direct_evidence_kind": "direct_measured_mac_array_baseline_slice",
+                "measured_dsp": 16,
+                "measured_lut": 1061,
+                "measured_ff": 524,
+                "measured_wns_ns": 1.942,
+                "measured_latency_cycles": 33,
+                "measured_effective_throughput_ops_per_cycle": 15.515151515151516,
+            },
+            {
+                "grid": "8x4",
+                "grid_rows": 8,
+                "grid_cols": 4,
+                "mac_units": 32,
+                "k_depth": 32,
+                "architecture": "baseline",
+                "architecture_family": "baseline",
+                "comparison_status": "direct_measured_vs_modelled",
+                "run_id": "baseline_8x4",
+                "direct_evidence_kind": "direct_measured_mac_array_baseline_slice",
+                "measured_dsp": 32,
+                "measured_lut": 2134,
+                "measured_ff": 1036,
+                "measured_wns_ns": 2.019,
+                "measured_latency_cycles": 33,
+                "measured_effective_throughput_ops_per_cycle": 31.03030303030303,
+            },
+            {
+                "grid": "8x8",
+                "grid_rows": 8,
+                "grid_cols": 8,
+                "mac_units": 64,
+                "k_depth": 32,
+                "architecture": "baseline",
+                "architecture_family": "baseline",
+                "comparison_status": "direct_measured_vs_modelled",
+                "run_id": "baseline_8x8",
+                "direct_evidence_kind": "direct_measured_mac_array_baseline_slice",
+                "measured_dsp": 64,
+                "measured_lut": 4287,
+                "measured_ff": 2060,
+                "measured_wns_ns": 0.634,
+                "measured_latency_cycles": 33,
+                "measured_effective_throughput_ops_per_cycle": 62.06060606060606,
+            },
+            {
+                "grid": "4x4",
+                "grid_rows": 4,
+                "grid_cols": 4,
+                "mac_units": 16,
+                "k_depth": 32,
+                "architecture": "shared_lut_saving",
+                "architecture_family": "shared",
+                "comparison_status": "direct_measured_vs_modelled",
+                "run_id": "shared_lut_4x4",
+                "direct_evidence_kind": "direct_measured_mac_array_shared_lut_saving_slice",
+                "measured_dsp": 16,
+                "measured_lut": 679,
+                "measured_ff": 525,
+                "measured_wns_ns": 1.199,
+                "measured_latency_cycles": 65,
+                "measured_effective_throughput_ops_per_cycle": 7.876923076923077,
+            },
+            {
+                "grid": "8x4",
+                "grid_rows": 8,
+                "grid_cols": 4,
+                "mac_units": 32,
+                "k_depth": 32,
+                "architecture": "shared_lut_saving",
+                "architecture_family": "shared",
+                "comparison_status": "direct_measured_vs_modelled",
+                "run_id": "shared_lut_8x4",
+                "direct_evidence_kind": "direct_measured_mac_array_shared_lut_saving_slice",
+                "measured_dsp": 32,
+                "measured_lut": 1351,
+                "measured_ff": 1037,
+                "measured_wns_ns": 1.038,
+                "measured_latency_cycles": 65,
+                "measured_effective_throughput_ops_per_cycle": 15.753846153846155,
+            },
+            {
+                "grid": "8x8",
+                "grid_rows": 8,
+                "grid_cols": 8,
+                "mac_units": 64,
+                "k_depth": 32,
+                "architecture": "shared_lut_saving",
+                "architecture_family": "shared",
+                "comparison_status": "direct_measured_vs_modelled",
+                "run_id": "shared_lut_8x8",
+                "direct_evidence_kind": "direct_measured_mac_array_shared_lut_saving_slice",
+                "measured_dsp": 64,
+                "measured_lut": 2694,
+                "measured_ff": 2068,
+                "measured_wns_ns": 0.948,
+                "measured_latency_cycles": 65,
+                "measured_effective_throughput_ops_per_cycle": 31.50769230769231,
+            },
+            {
+                "grid": "4x4",
+                "grid_rows": 4,
+                "grid_cols": 4,
+                "mac_units": 16,
+                "k_depth": 32,
+                "architecture": "shared_dsp_reducing",
+                "architecture_family": "shared",
+                "comparison_status": "direct_measured_vs_modelled",
+                "run_id": "shared_dsp_4x4",
+                "direct_evidence_kind": "direct_measured_mac_array_shared_dsp_reducing_slice",
+                "measured_dsp": 0,
+                "measured_lut": 910,
+                "measured_ff": 589,
+                "measured_wns_ns": 2.261,
+                "measured_latency_cycles": 65,
+                "measured_effective_throughput_ops_per_cycle": 7.876923076923077,
+            },
+            {
+                "grid": "8x4",
+                "grid_rows": 8,
+                "grid_cols": 4,
+                "mac_units": 32,
+                "k_depth": 32,
+                "architecture": "shared_dsp_reducing",
+                "architecture_family": "shared",
+                "comparison_status": "direct_measured_vs_modelled",
+                "run_id": "shared_dsp_8x4",
+                "direct_evidence_kind": "direct_measured_mac_array_shared_dsp_reducing_slice",
+                "measured_dsp": 0,
+                "measured_lut": 1817,
+                "measured_ff": 1165,
+                "measured_wns_ns": 1.378,
+                "measured_latency_cycles": 65,
+                "measured_effective_throughput_ops_per_cycle": 15.753846153846155,
+            },
+            {
+                "grid": "8x8",
+                "grid_rows": 8,
+                "grid_cols": 8,
+                "mac_units": 64,
+                "k_depth": 32,
+                "architecture": "shared_dsp_reducing",
+                "architecture_family": "shared",
+                "comparison_status": "direct_measured_vs_modelled",
+                "run_id": "shared_dsp_8x8",
+                "direct_evidence_kind": "direct_measured_mac_array_shared_dsp_reducing_slice",
+                "measured_dsp": 0,
+                "measured_lut": 3620,
+                "measured_ff": 2324,
+                "measured_wns_ns": 0.773,
+                "measured_latency_cycles": 65,
+                "measured_effective_throughput_ops_per_cycle": 31.50769230769231,
             },
         ]
 
@@ -512,6 +686,95 @@ class DirectMacSliceTest(unittest.TestCase):
         self.assertIn("justified only when the relieved bottleneck matters more than the overhead it introduces", joined)
         self.assertIn("not a free win", joined)
         self.assertIn("Implementation style determines both the relieved bottleneck and the overhead paid", joined)
+
+    def test_measured_predictor_rows_mark_exact_and_caution_metrics(self) -> None:
+        rows = self._three_scale_actual_input_rows()
+        predictor_rows = build_measured_predictor_rows(rows)
+        by_key = {(row["architecture_variant"], row["metric"]): row for row in predictor_rows}
+
+        self.assertEqual(by_key[("baseline", "dsp")]["fit_status"], "exact_validated_formula")
+        self.assertEqual(by_key[("shared_dsp_reducing", "dsp")]["predictor_formula"], "dsp = 0")
+        self.assertEqual(by_key[("baseline", "latency_cycles")]["max_abs_residual"], 0.0)
+        self.assertEqual(by_key[("shared_lut_saving", "effective_throughput_ops_per_cycle")]["max_abs_residual"], 0.0)
+        self.assertEqual(by_key[("baseline", "wns_ns")]["fit_status"], "too_unstable_for_trusted_prediction")
+
+    def test_measured_fit_residual_rows_cover_measured_lattice(self) -> None:
+        rows = self._three_scale_actual_input_rows()
+        predictor_rows = build_measured_predictor_rows(rows)
+        residual_rows = build_measured_fit_residual_rows(rows, predictor_rows)
+
+        baseline_latency = [
+            row for row in residual_rows
+            if row["architecture_variant"] == "baseline" and row["metric"] == "latency_cycles"
+        ]
+        self.assertEqual(len(baseline_latency), 3)
+        self.assertTrue(all(row["residual"] == 0.0 for row in baseline_latency))
+
+    def test_measured_predictor_summary_and_boundary_expose_trust_limits(self) -> None:
+        rows = self._three_scale_actual_input_rows()
+        predictor_rows = build_measured_predictor_rows(rows)
+        summary = build_measured_predictor_summary(predictor_rows)
+        boundary = build_measured_extrapolation_boundary_summary(predictor_rows)
+
+        joined = " ".join(summary["summary_lines"])
+        boundary_joined = " ".join(boundary["summary_lines"])
+        self.assertIn("DSP, latency, and throughput are well fit", joined)
+        self.assertIn("WNS remains the least stable metric", joined)
+        self.assertEqual(boundary["interpolation_domain_mac_units_min"], 16)
+        self.assertEqual(boundary["interpolation_domain_mac_units_max"], 64)
+        self.assertIn("interpolation is bounded", boundary_joined.lower())
+        self.assertIn("unvalidated extrapolation", boundary_joined)
+
+    def test_measured_decision_surface_prefers_expected_variants_and_tags_trust(self) -> None:
+        rows = self._three_scale_actual_input_rows()
+        tradeoff_rows = build_direct_tradeoff_rows(self._two_scale_input_rows())
+        predictor_rows = build_measured_predictor_rows(rows)
+        utility_rows = build_measured_utility_rows(tradeoff_rows)
+        bottleneck_rows = build_measured_bottleneck_choice_map(utility_rows, tradeoff_rows)
+        decision_rows = build_measured_decision_surface(predictor_rows, utility_rows, bottleneck_rows)
+
+        by_key = {(row["mac_units"], row["regime_id"]): row for row in decision_rows}
+        self.assertEqual(by_key[(16, "lut_budget_tight_relaxed_performance")]["preferred_variant"], "shared_lut_saving")
+        self.assertEqual(by_key[(32, "dsp_budget_tight_relaxed_performance")]["preferred_variant"], "shared_dsp_reducing")
+        self.assertEqual(by_key[(64, "no_hard_resource_bottleneck")]["preferred_variant"], "baseline")
+        self.assertEqual(by_key[(48, "lut_budget_tight_relaxed_performance")]["trust_status"], "interpolated_within_measured_domain")
+        self.assertEqual(by_key[(32, "timing_margin_sensitive")]["decision_status"], "unsupported_due_to_wns_instability")
+
+    def test_measured_budget_boundaries_and_supported_region_map_keep_domain_bounded(self) -> None:
+        rows = self._three_scale_actual_input_rows()
+        predictor_rows = build_measured_predictor_rows(rows)
+        boundary_rows = build_measured_budget_boundary_rows(predictor_rows)
+        tradeoff_rows = build_direct_tradeoff_rows(self._two_scale_input_rows())
+        utility_rows = build_measured_utility_rows(tradeoff_rows)
+        bottleneck_rows = build_measured_bottleneck_choice_map(utility_rows, tradeoff_rows)
+        decision_rows = build_measured_decision_surface(
+            predictor_rows,
+            utility_rows,
+            bottleneck_rows,
+        )
+        supported_region_map = build_measured_supported_region_map(decision_rows, boundary_rows)
+
+        self.assertTrue(any(row["mac_units"] == 15 and row["trust_status"] == "unsupported_extrapolation" for row in boundary_rows))
+        self.assertTrue(any(row["mac_units"] == 65 and row["trust_status"] == "unsupported_extrapolation" for row in boundary_rows))
+        joined = " ".join(supported_region_map["summary_lines"])
+        self.assertIn("shared_lut_saving owns the LUT-only window", joined)
+        self.assertIn("refuse to claim", joined)
+
+    def test_measured_regime_transfer_summary_uses_bounded_surface_language(self) -> None:
+        rows = self._three_scale_actual_input_rows()
+        tradeoff_rows = build_direct_tradeoff_rows(self._two_scale_input_rows())
+        predictor_rows = build_measured_predictor_rows(rows)
+        utility_rows = build_measured_utility_rows(tradeoff_rows)
+        bottleneck_rows = build_measured_bottleneck_choice_map(utility_rows, tradeoff_rows)
+        decision_rows = build_measured_decision_surface(predictor_rows, utility_rows, bottleneck_rows)
+        boundary_rows = build_measured_budget_boundary_rows(predictor_rows)
+        summary = build_measured_regime_transfer_summary(decision_rows, boundary_rows, predictor_rows)
+
+        joined = " ".join(summary["summary_lines"])
+        self.assertIn("bounded to the validated direct-slice interpolation domain", joined)
+        self.assertIn("Baseline remains dominant whenever the design is performance-first", joined)
+        self.assertIn("Timing-sensitive transfer is intentionally excluded", joined)
+        self.assertIn("refuse to claim a predictor-backed architecture choice", joined)
 
 
 if __name__ == "__main__":

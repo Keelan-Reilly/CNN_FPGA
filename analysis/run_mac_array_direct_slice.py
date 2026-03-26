@@ -19,9 +19,17 @@ try:
         build_framework_trust_overlay_rows,
         build_measured_bottleneck_choice_map,
         build_measured_design_rule_extraction_summary,
+        build_measured_decision_surface,
+        build_measured_budget_boundary_rows,
+        build_measured_regime_transfer_summary,
+        build_measured_supported_region_map,
         build_measured_design_rule_summary,
+        build_measured_extrapolation_boundary_summary,
+        build_measured_fit_residual_rows,
         build_measured_flexibility_justification_table,
         build_measured_flexibility_overhead_rows,
+        build_measured_predictor_rows,
+        build_measured_predictor_summary,
         build_measured_support_rows,
         build_measured_trust_summary,
         build_measured_utility_rows,
@@ -36,7 +44,11 @@ try:
         render_direct_shared_scaling_summary,
         render_measured_design_rules,
         render_measured_design_rule_extraction_summary,
+        render_measured_regime_transfer_summary,
+        render_measured_supported_region_map,
         render_measured_utility_summary,
+        render_measured_extrapolation_boundary,
+        render_measured_predictor_summary,
         render_measured_vs_modelled_trust_summary,
         render_shared_family_calibration_summary,
         render_measured_tradeoff_regime_summary,
@@ -55,9 +67,17 @@ except ImportError:
         build_framework_trust_overlay_rows,
         build_measured_bottleneck_choice_map,
         build_measured_design_rule_extraction_summary,
+        build_measured_decision_surface,
+        build_measured_budget_boundary_rows,
+        build_measured_regime_transfer_summary,
+        build_measured_supported_region_map,
         build_measured_design_rule_summary,
+        build_measured_extrapolation_boundary_summary,
+        build_measured_fit_residual_rows,
         build_measured_flexibility_justification_table,
         build_measured_flexibility_overhead_rows,
+        build_measured_predictor_rows,
+        build_measured_predictor_summary,
         build_measured_support_rows,
         build_measured_trust_summary,
         build_measured_utility_rows,
@@ -72,7 +92,11 @@ except ImportError:
         render_direct_shared_scaling_summary,
         render_measured_design_rules,
         render_measured_design_rule_extraction_summary,
+        render_measured_regime_transfer_summary,
+        render_measured_supported_region_map,
         render_measured_utility_summary,
+        render_measured_extrapolation_boundary,
+        render_measured_predictor_summary,
         render_measured_vs_modelled_trust_summary,
         render_shared_family_calibration_summary,
         render_measured_tradeoff_regime_summary,
@@ -92,6 +116,10 @@ def main() -> int:
     output_dir = Path(args.output_dir).resolve()
     rows = build_direct_slice_comparison_rows()
     summary = build_direct_calibration_summary(rows)
+    predictor_rows = build_measured_predictor_rows(rows)
+    predictor_residual_rows = build_measured_fit_residual_rows(rows, predictor_rows)
+    predictor_summary = build_measured_predictor_summary(predictor_rows)
+    extrapolation_boundary = build_measured_extrapolation_boundary_summary(predictor_rows)
     tradeoff_rows = build_direct_tradeoff_rows(rows)
     comparison_rows = build_direct_shared_implementation_comparison_rows(tradeoff_rows)
     comparison_summary = build_direct_shared_implementation_summary(tradeoff_rows)
@@ -111,11 +139,25 @@ def main() -> int:
         flexibility_overhead_rows,
         flexibility_justification_rows,
     )
+    decision_surface_rows = build_measured_decision_surface(predictor_rows, utility_rows, bottleneck_rows)
+    budget_boundary_rows = build_measured_budget_boundary_rows(predictor_rows)
+    regime_transfer_summary = build_measured_regime_transfer_summary(
+        decision_surface_rows,
+        budget_boundary_rows,
+        predictor_rows,
+    )
+    supported_region_map = build_measured_supported_region_map(decision_surface_rows, budget_boundary_rows)
     decision_rows = build_measured_tradeoff_decision_rows(tradeoff_rows)
     design_rule_summary = build_measured_design_rule_summary(tradeoff_rows, decision_rows)
     write_csv(output_dir / "direct_measured_vs_modelled.csv", rows)
     write_json(output_dir / "direct_measured_vs_modelled.json", rows)
     write_json(output_dir / "direct_calibration_summary.json", summary)
+    write_csv(output_dir / "measured_predictor_table.csv", predictor_rows)
+    write_json(output_dir / "measured_predictor_table.json", predictor_rows)
+    write_csv(output_dir / "measured_fit_residuals.csv", predictor_residual_rows)
+    write_json(output_dir / "measured_fit_residuals.json", predictor_residual_rows)
+    write_json(output_dir / "measured_predictor_summary.json", predictor_summary)
+    write_json(output_dir / "measured_extrapolation_boundary.json", extrapolation_boundary)
     write_csv(output_dir / "direct_tradeoff_measured_vs_modelled.csv", tradeoff_rows)
     write_json(output_dir / "direct_tradeoff_measured_vs_modelled.json", tradeoff_rows)
     write_csv(output_dir / "direct_shared_implementation_comparison.csv", comparison_rows)
@@ -142,11 +184,19 @@ def main() -> int:
     write_csv(output_dir / "measured_flexibility_justification_table.csv", flexibility_justification_rows)
     write_json(output_dir / "measured_flexibility_justification_table.json", flexibility_justification_rows)
     write_json(output_dir / "measured_design_rule_extraction_summary.json", design_rule_extraction_summary)
+    write_csv(output_dir / "measured_decision_surface.csv", decision_surface_rows)
+    write_json(output_dir / "measured_decision_surface.json", decision_surface_rows)
+    write_csv(output_dir / "measured_budget_boundary_table.csv", budget_boundary_rows)
+    write_json(output_dir / "measured_budget_boundary_table.json", budget_boundary_rows)
+    write_json(output_dir / "measured_regime_transfer_summary.json", regime_transfer_summary)
+    write_json(output_dir / "measured_supported_region_map.json", supported_region_map)
     write_csv(output_dir / "measured_tradeoff_decision_table.csv", decision_rows)
     write_json(output_dir / "measured_tradeoff_decision_table.json", decision_rows)
     write_json(output_dir / "measured_design_rule_summary.json", design_rule_summary)
     render_direct_slice_summary(output_dir / "direct_slice_summary.md", rows, summary, design_rule_summary)
     render_direct_calibration_summary(output_dir / "direct_calibration_summary.md", summary)
+    render_measured_predictor_summary(output_dir / "measured_predictor_summary.md", predictor_summary, predictor_rows)
+    render_measured_extrapolation_boundary(output_dir / "measured_extrapolation_boundary.md", extrapolation_boundary)
     render_direct_tradeoff_summary(output_dir / "direct_tradeoff_summary.md", tradeoff_rows)
     render_direct_shared_implementation_summary(output_dir / "direct_shared_implementation_summary.md", comparison_summary)
     render_direct_shared_scaling_summary(output_dir / "direct_shared_scaling_summary.md", scaling_summary)
@@ -157,6 +207,15 @@ def main() -> int:
         output_dir / "measured_design_rule_extraction_summary.md",
         design_rule_extraction_summary,
         flexibility_justification_rows,
+    )
+    render_measured_regime_transfer_summary(
+        output_dir / "measured_regime_transfer_summary.md",
+        regime_transfer_summary,
+        decision_surface_rows,
+    )
+    render_measured_supported_region_map(
+        output_dir / "measured_supported_region_map.md",
+        supported_region_map,
     )
     render_measured_tradeoff_regime_summary(output_dir / "measured_tradeoff_regime_summary.md", decision_rows)
     render_measured_design_rules(output_dir / "measured_design_rules.md", design_rule_summary)

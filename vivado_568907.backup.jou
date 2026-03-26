@@ -3,22 +3,22 @@
 # SW Build 6299465 on Fri Nov 14 12:34:56 MST 2025
 # IP Build 6300035 on Fri Nov 14 10:48:45 MST 2025
 # SharedData Build 6298862 on Thu Nov 13 04:50:51 MST 2025
-# Start of session at: Mon Mar 23 02:20:23 2026
-# Process ID         : 547501
+# Start of session at: Wed Mar 25 23:34:43 2026
+# Process ID         : 568907
 # Current directory  : /home/keelan/CNN_FPGA
-# Command line       : vivado -mode batch -source /home/keelan/CNN_FPGA/fpga/vivado/run_batch.tcl -tclargs /home/keelan/CNN_FPGA /home/keelan/CNN_FPGA/results/fpga/runs/study_mac_array_direct_tradeoff_4x4/mac_array_baseline_4x4_k32_20260323T022021Z xc7a35tcpg236-1 mac_array_direct_top /home/keelan/CNN_FPGA/fpga/vivado/mac_array_direct_constraints.xdc 10.0 2 ARRAY_COLS=4,ARRAY_ROWS=4,CLK_FREQ_HZ=100000000,DATA_WIDTH=16,K_DEPTH=32
+# Command line       : vivado -mode batch -source /home/keelan/CNN_FPGA/fpga/vivado/run_batch.tcl -tclargs /home/keelan/CNN_FPGA /home/keelan/CNN_FPGA/results/fpga/runs/study_mac_array_direct_shared_lut_8x8/mac_array_shared_lut_8x8_k32_20260325T233442Z xc7a35tcpg236-1 mac_array_direct_top /home/keelan/CNN_FPGA/fpga/vivado/mac_array_direct_constraints.xdc 10.0 2 ARCH_MODE=1,ARRAY_COLS=8,ARRAY_ROWS=8,CLK_FREQ_HZ=100000000,DATA_WIDTH=16,K_DEPTH=32
 # Log file           : /home/keelan/CNN_FPGA/vivado.log
 # Journal file       : /home/keelan/CNN_FPGA/vivado.jou
 # Running On         : keelan-Inspiron-5593
 # Platform           : Ubuntu
 # Operating System   : Ubuntu 22.04.5 LTS
 # Processor Detail   : Intel(R) Core(TM) i7-1065G7 CPU @ 1.30GHz
-# CPU Frequency      : 3800.000 MHz
+# CPU Frequency      : 3595.479 MHz
 # CPU Physical cores : 4
 # CPU Logical cores  : 8
 # Host memory        : 16527 MB
 # Swap memory        : 2147 MB
 # Total Virtual      : 18674 MB
-# Available Virtual  : 14830 MB
+# Available Virtual  : 15101 MB
 #-----------------------------------------------------------
 source /home/keelan/CNN_FPGA/fpga/vivado/run_batch.tcl
